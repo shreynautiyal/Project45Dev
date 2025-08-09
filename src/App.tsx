@@ -7,6 +7,7 @@ import UpgradePro from './pages/upgrades';
 import { Landing } from './pages/Landing';
 import Login from './pages/Auth/Login';
 import Signup from './pages/Auth/Signup';
+import SubjectSetup from './pages/Auth/SubjectSetup';
 
 // Protected Pages
 import { Dashboard } from './pages/Dashboard';
@@ -79,6 +80,15 @@ export default function App() {
     </ProtectedRoute>
   }
 />
+<Route
+  path="/subject-setup"
+  element={
+    <ProtectedRoute>
+      <SubjectSetup />
+    </ProtectedRoute>
+  }
+/>
+
         <Route
           path="/signup"
           element={

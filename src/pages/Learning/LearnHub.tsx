@@ -142,46 +142,63 @@ const LearnHub: React.FC = () => {
   // history paging
   const [historyPage, setHistoryPage] = useState(0);
   const [hasMoreHistory, setHasMoreHistory] = useState(false);
+  const [subjectsLoading, setSubjectsLoading] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   /* --------- Load User Subjects (blocking) ---------- */
   useEffect(() => {
-    (async () => {
-      if (!user) return;
-      setSubjectsError(null);
-      setSubjects(null);
-      setSelectedSubject(null);
-      try {
-        const { data, error } = await supabase.rpc('get_my_subjects');
-        if (error) throw error;
+  if (!user?.id) return;           // add this
+  const loadSubjects = async () => {
+    setSubjectsLoading(true);
+    try {
+      const { data, error } = await supabase.rpc('get_my_subjects');
+      if (error) throw error;
 
-        if (!data || data.length === 0) {
-          setSubjectsError('You need to finish subject setup before using the AI chat.');
-          setSubjects([]);
+      if (data && data.length > 0) {
+        const mapped = data.map((r: any) => ({
+          id: r.subject_id, name: r.name, icon: r.icon, color: r.color,
+        }));
+        setSubjects(mapped);
+        // restore last selected if available
+        const stored = localStorage.getItem(STORAGE_SUBJECT_KEY);
+        const found = mapped.find((m: any) => m.id === stored);
+        setSelectedSubject(found || mapped[0]);
+        return;
+      }
+
+      const u = await supabase.auth.getUser();
+      const picked = (u.data.user?.user_metadata as any)?.subjects as string[] | undefined;
+
+      if (picked?.length) {
+        await supabase.rpc('set_initial_subjects', { p_subject_names: picked });
+        const retry = await supabase.rpc('get_my_subjects');
+        if (retry.data?.length) {
+          const mapped = retry.data.map((r: any) => ({
+            id: r.subject_id, name: r.name, icon: r.icon, color: r.color,
+          }));
+          setSubjects(mapped);
+          const stored = localStorage.getItem(STORAGE_SUBJECT_KEY);
+          const found = mapped.find((m: any) => m.id === stored);
+          setSelectedSubject(found || mapped[0]);
           return;
         }
-
-        const mapped: Subject[] = (data as any[]).map((r) => ({
-          id: r.subject_id,
-          name: r.name,
-          icon: r.icon,
-          color: r.color,
-        }));
-
-        setSubjects(mapped);
-
-        // restore last selected subject from localStorage
-        const stored = localStorage.getItem(STORAGE_SUBJECT_KEY);
-        const found = mapped.find(m => m.id === stored);
-        setSelectedSubject(found || mapped[0]);
-      } catch (err: any) {
-        console.error('[subjects] load error', err);
-        setSubjectsError(err?.message ?? 'Failed to load your subjects.');
-        setSubjects([]);
       }
-    })();
-  }, [user?.id]);
+
+      setSubjectsError('You need to finish subject setup before using the AI chat.');
+      setSubjects([]);
+    } catch (err: any) {
+      console.error('Error loading subjects', err);
+      setSubjectsError(err.message || 'Failed to load subjects.');
+      setSubjects([]);
+    } finally {
+      setSubjectsLoading(false);
+    }
+  };
+  loadSubjects();
+}, [user?.id]);   // <— dependency
+
+
 
   // Persist selection
   useEffect(() => {
@@ -593,7 +610,7 @@ const LearnHub: React.FC = () => {
           <h2 className="text-xl font-bold mb-2">Finish setup to continue</h2>
           <p className="text-gray-600 mb-6">{subjectsError || 'You haven’t selected any IB subjects yet.'}</p>
           <a
-            href="/signup"
+            href="/subject-setup"
             className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-white bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700"
           >
             Go to subject setup
@@ -865,3 +882,4 @@ const LearnHub: React.FC = () => {
 };
 
 export default LearnHub;
+

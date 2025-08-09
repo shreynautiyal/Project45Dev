@@ -110,7 +110,7 @@ const Signup: React.FC = () => {
         const { count, error } = await supabase
           .from('profiles')
           .select('id', { count: 'exact', head: true })
-          .ilike('username', uname); // case-insensitive
+          .ilike('username', uname);
         if (!cancelled) {
           if (error) {
             console.warn('[signup] username check error:', error);
@@ -141,13 +141,25 @@ const Signup: React.FC = () => {
     return () => clearInterval(t);
   }, [resendCooldown]);
 
+  async function hydrateUserSubjectsFromNames(names: string[]) {
+    if (!names?.length) return;
+    try {
+      const { error } = await supabase.rpc('set_initial_subjects', {
+        p_subject_names: names,
+      });
+      if (error) console.warn('[signup] set_initial_subjects error:', error);
+    } catch (e) {
+      console.warn('[signup] set_initial_subjects exception:', e);
+    }
+  }
+
   async function handleCreate() {
     if (!canNext1) return;
     setLoading(true);
     setEmailError(null);
 
     try {
-      // Store username + subjects + phone in user metadata
+      // 1) create auth user + stash metadata (username, subjects, phone)
       const { data, error } = await supabase.auth.signUp({
         email,
         password,
@@ -156,17 +168,27 @@ const Signup: React.FC = () => {
           data: { username, subjects, phone }
         }
       });
-
       if (error) throw error;
 
-      if (!data.session) {
+      // 2) If session exists now (email conf disabled), write user_subjects immediately
+      if (data.session) {
+        await hydrateUserSubjectsFromNames(subjects);
+
+        // also upsert profiles
+        try {
+          await supabase.from('profiles').upsert(
+            { id: data.user!.id, username, phone },
+            { onConflict: 'id' }
+          );
+        } catch (_) {}
+
+        toast.success('Account created!');
+      } else {
+        // email verification required — trigger will copy metadata later
         toast.success('Account created! We sent a verification link to your email.');
         setResendCooldown(60);
-      } else {
-        toast.success('Account created!');
       }
     } catch (err: any) {
-      // Map common Supabase auth errors
       const msg: string = err?.message ?? 'Failed to create account';
       if (/already registered|user already exists/i.test(msg)) {
         setEmailError('This email is already registered. Try signing in instead.');
