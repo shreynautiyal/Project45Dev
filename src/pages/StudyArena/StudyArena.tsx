@@ -38,7 +38,7 @@ import {
   XCircle,
 } from 'lucide-react';
 // Ask-for-key modal state
-const [enterKeyFor, setEnterKeyFor] = useState<Room | null>(null);
+
 
 /* ----------------------------- Types ----------------------------- */
 
@@ -159,11 +159,11 @@ function isActive(lastInputMs: number, hiddenSinceMs: number | null) {
 
 export default function StudyArena() {
   const { user } = useAuthStore();
-  const [rooms, setRooms] = useState<Room[]>([]);
+  
   const [loadingRooms, setLoadingRooms] = useState(true);
 
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
-
+  const [enterKeyFor, setEnterKeyFor] = useState<Room | null>(null);
   const [roomName, setRoomName] = useState('');
   const [subject, setSubject] = useState('');
   const [difficulty, setDifficulty] = useState<Room['difficulty']>('Easy');
@@ -171,7 +171,7 @@ export default function StudyArena() {
   const [requiresKey, setRequiresKey] = useState(false); // NEW
   const [plainKey, setPlainKey] = useState(''); // sent to server for hashing or stored as-is if you choose
   const [showCreate, setShowCreate] = useState(false);
-
+  const [rooms, setRooms] = useState<Room[]>([]);
   const [showSettings, setShowSettings] = useState(false); // NEW room settings
 
   const [messages, setMessages] = useState<Message[]>([]);

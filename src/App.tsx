@@ -21,7 +21,7 @@ import StudyArena from './pages/StudyArena/StudyArena';
 
 // NEW: Socials page (friends + profile hub)
 import Socials from './pages/Profile/Profile';
-import Settings from './pages/Settings/Settings';
+
 
 function LoadingSpinner() {
   return (
@@ -146,14 +146,6 @@ export default function App() {
           element={
             <ProtectedRoute>
               <Socials />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/settings"
-          element={
-            <ProtectedRoute>
-              <Settings />
             </ProtectedRoute>
           }
         />
