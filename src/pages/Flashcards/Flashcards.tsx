@@ -1,5 +1,5 @@
 // src/pages/Flashcards/Flashcards.tsx
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Plus,
@@ -18,6 +18,11 @@ import {
   AlertTriangle,
   CheckCircle,
   XCircle,
+  Sparkles,
+  Filter,
+  Download,
+  Upload,
+  ShieldCheck,
 } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import { supabase } from '../../lib/supabase';
@@ -38,6 +43,9 @@ import {
 import toast from 'react-hot-toast';
 import { aiService } from '../services/aiService';
 
+/* =========================
+   Types
+========================= */
 interface Folder {
   id: string;
   user_id: string;
@@ -50,23 +58,31 @@ interface Folder {
 
 interface Flashcard {
   id: string;
+  user_id?: string;
   folder_id: string;
+  subject?: string;
   question: string;
   answer: string;
-  difficulty: number;
+  difficulty: number; // 1 (easy) → 5 (hard)
   review_count: number;
   correct_count: number;
   last_reviewed: string | null;
   next_review: string;
+  created_at?: string;
 }
 
-interface AIFlashcard {
-  question: string;
-  answer: string;
-}
+interface AIFlashcard { question: string; answer: string }
 
+type Tier = 'Free' | 'Pro' | 'Elite' | string;
+
+/* =========================
+   Component
+========================= */
 export const Flashcards: React.FC = () => {
   const { user } = useAuthStore();
+
+  // ========= State =========
+  const [tier, setTier] = useState<Tier>('Free');
   const [folders, setFolders] = useState<Folder[]>([]);
   const [selectedFolder, setSelectedFolder] = useState<Folder | null>(null);
   const [flashcards, setFlashcards] = useState<Flashcard[]>([]);
@@ -81,12 +97,13 @@ export const Flashcards: React.FC = () => {
   const [timerActive, setTimerActive] = useState(false);
   const [timerPaused, setTimerPaused] = useState(false);
   const [sessionStats, setSessionStats] = useState({ correct: 0, incorrect: 0, total: 0 });
-  
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const timerRef = useRef<number | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
 
   const [showCreateFolder, setShowCreateFolder] = useState(false);
   const [showCreateCard, setShowCreateCard] = useState(false);
+  const [showInsights, setShowInsights] = useState(false);
 
   const [newFolder, setNewFolder] = useState({
     name: '',
@@ -103,191 +120,64 @@ export const Flashcards: React.FC = () => {
   const [currentlyGenerating, setCurrentlyGenerating] = useState(0);
   const [totalToGenerate, setTotalToGenerate] = useState(0);
 
-  const subjects = [
-    'Math AA',
-    'Math AI',
-    'English Lang & Lit',
-    'Economics',
-    'Business Management',
-    'Chemistry',
-    'Physics',
-    'Biology',
-    'Spanish Ab Initio',
-    'French Ab Initio',
-  ];
-  const colors = [
-    'from-blue-500 to-purple-600',
-    'from-green-500 to-teal-600',
-    'from-purple-500 to-pink-600',
-    'from-orange-500 to-red-600',
-    'from-yellow-500 to-orange-600',
-    'from-indigo-500 to-blue-600',
-    'from-red-500 to-pink-600',
-    'from-cyan-500 to-blue-600',
-  ];
+  // Insights
+  const [insightsLoading, setInsightsLoading] = useState(false);
+  const [insightsText, setInsightsText] = useState('');
 
-  // Audio alerts
+  // ======= Derived =======
+  const dueToday = useMemo(() => {
+    const now = new Date();
+    return flashcards.filter(c => new Date(c.next_review) <= now);
+  }, [flashcards]);
+
+  const progressPct = useMemo(() => (
+    flashcards.length ? Math.round(((currentCardIndex + 1) / flashcards.length) * 100) : 0
+  ), [currentCardIndex, flashcards.length]);
+
+  // ========= Effects =========
+  // Create/cleanup audio context on first user gesture
   useEffect(() => {
-    audioRef.current = new Audio();
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, []);
-    if (!user) return;
-  const playAlert = (type: 'warning' | 'timeout' | 'correct' | 'incorrect') => {
-    if (!audioRef.current) return;
-    
-    // Generate different frequency tones for different alerts
-    const context = new (window.AudioContext || (window as any).webkitAudioContext)();
-    const oscillator = context.createOscillator();
-    const gainNode = context.createGain();
-    
-    oscillator.connect(gainNode);
-    gainNode.connect(context.destination);
-    
-    let frequency = 440;
-    let duration = 0.2;
-    
-    switch (type) {
-      case 'warning':
-        frequency = 800;
-        duration = 0.3;
-        break;
-      case 'timeout':
-        frequency = 300;
-        duration = 0.8;
-        break;
-      case 'correct':
-        frequency = 600;
-        duration = 0.2;
-        break;
-      case 'incorrect':
-        frequency = 200;
-        duration = 0.4;
-        break;
-    }
-    
-    oscillator.frequency.setValueAtTime(frequency, context.currentTime);
-    oscillator.type = 'sine';
-    gainNode.gain.setValueAtTime(0.3, context.currentTime);
-    gainNode.gain.exponentialRampToValueAtTime(0.01, context.currentTime + duration);
-    
-    oscillator.start(context.currentTime);
-    oscillator.stop(context.currentTime + duration);
-  };
-
-  // Timer management
-  useEffect(() => {
-    if (timerActive && !timerPaused && currentTime > 0) {
-      timerRef.current = setTimeout(() => {
-        setCurrentTime(prev => {
-          const newTime = prev - 1;
-          
-          // Warning at 10 seconds
-          if (newTime === 10) {
-            playAlert('warning');
-            toast('⏰ 10 seconds remaining!', {
-              icon: '⚠️',
-              style: { background: '#FEF3C7', color: '#92400E' }
-            });
-          }
-          
-          // Timeout at 0
-          if (newTime === 0) {
-            playAlert('timeout');
-            toast.error('⏰ Time\'s up! Moving to next card');
-            handleTimeout();
-          }
-          
-          return newTime;
-        });
-      }, 1000);
-    }
-
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-  }, [timerActive, timerPaused, currentTime]);
-
-  const handleTimeout = () => {
-    setSessionStats(prev => ({ ...prev, incorrect: prev.incorrect + 1, total: prev.total + 1 }));
-    markCardCorrect(false);
-  };
-
-  const startTimer = () => {
-    setTimerActive(true);
-    setTimerPaused(false);
-    setCurrentTime(studyTimer);
-  };
-
-  const pauseTimer = () => {
-    setTimerPaused(true);
-  };
-
-  const resumeTimer = () => {
-    setTimerPaused(false);
-  };
-
-  const stopTimer = () => {
-    setTimerActive(false);
-    setTimerPaused(false);
-    setCurrentTime(studyTimer);
-  };
-
-  // Enhanced text cleaning and parsing
-  const cleanText = (str: string) => {
-    if (!str) return '';
-    
-    return str
-      .replace(/```(?:json)?/g, '')
-      .replace(/^[\{\[\"\']|[\}\]\"\']$/g, '')
-      .replace(/\\n/g, '\n')
-      .replace(/\\"/g, '"')
-      .replace(/^(question|answer)[":\s]+/gi, '') // Remove prefixes like "question:" or "answer:"
-      .replace(/^\d+[\.\)]\s*/, '') // Remove numbering like "1." or "1)"
-      .trim();
-  };
-
-  // Parse AI response to extract proper question/answer pairs
-  const parseAIFlashcards = (aiCards: AIFlashcard[]): AIFlashcard[] => {
-    return aiCards.map(card => {
-      let question = cleanText(card.question);
-      let answer = cleanText(card.answer);
-      
-      // Handle cases where the entire response is in one field
-      if (!question && answer.includes('?')) {
-        const parts = answer.split(/\n\s*(?:answer|a)[:.\s]+/i);
-        if (parts.length >= 2) {
-          question = cleanText(parts[0]);
-          answer = cleanText(parts[1]);
+    const enableAudio = () => {
+      if (!audioContextRef.current) {
+        try {
+          audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+        } catch (e) {
+          console.warn('AudioContext not available', e);
         }
       }
-      
-      // Handle cases where question/answer labels are mixed in
-      if (question.toLowerCase().includes('answer:')) {
-        const parts = question.split(/answer\s*[:.\s]+/i);
-        question = cleanText(parts[0]);
-        if (parts[1] && !answer) answer = cleanText(parts[1]);
-      }
-      
-      if (answer.toLowerCase().includes('question:')) {
-        const parts = answer.split(/question\s*[:.\s]+/i);
-        answer = cleanText(parts[0]);
-        if (parts[1] && !question) question = cleanText(parts[1]);
-      }
-      
-      return {
-        question: question || 'Question not properly formatted',
-        answer: answer || 'Answer not properly formatted'
-      };
-    });
-  };
+      window.removeEventListener('pointerdown', enableAudio);
+    };
+    window.addEventListener('pointerdown', enableAudio);
+    return () => window.removeEventListener('pointerdown', enableAudio);
+  }, []);
 
-  // ─── Load folders ───────────────────────────────────────────
+  // Keyboard shortcuts
   useEffect(() => {
-    if (!user) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!selectedFolder) return;
+      if (e.key === ' ') { e.preventDefault(); setShowAnswer(s => !s); }
+      if (e.key === 'ArrowRight') nextCard();
+      if (e.key === 'ArrowLeft') prevCard();
+      if (e.key === '1') markCardCorrect(false);
+      if (e.key === '2') markCardCorrect(true);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selectedFolder, currentCardIndex, flashcards]);
+
+  // Load tier + folders on mount/login
+  useEffect(() => {
     (async () => {
       try {
+        if (!user) return;
+        // Get tier from profiles (adjust table/columns to your schema)
+        const { data: prof, error: pErr } = await supabase
+          .from('profiles')
+          .select('tier')
+          .eq('id', user.id)
+          .maybeSingle();
+        if (!pErr && prof?.tier) setTier(prof.tier as Tier);
+
         const { data, error } = await supabase
           .from('flashcard_folders')
           .select('*')
@@ -297,14 +187,14 @@ export const Flashcards: React.FC = () => {
         setFolders(data || []);
       } catch (e) {
         console.error(e);
-        toast.error('Failed to load folders');
+        toast.error('Failed to load your folders');
       } finally {
         setLoading(false);
       }
     })();
   }, [user]);
 
-  // ─── Load flashcards when folder changes ───────────────────
+  // Load flashcards when folder changes
   useEffect(() => {
     if (!selectedFolder) return;
     (async () => {
@@ -326,7 +216,85 @@ export const Flashcards: React.FC = () => {
     })();
   }, [selectedFolder]);
 
-  // ─── Folder CRUD ────────────────────────────────────────────
+  // Timer management with cleanup
+  useEffect(() => {
+    if (!(timerActive && !timerPaused && currentTime > 0)) return;
+    const id = window.setTimeout(() => {
+      setCurrentTime(prev => {
+        const newTime = prev - 1;
+        if (newTime === 10) {
+          playAlert('warning');
+          toast('⏰ 10 seconds remaining!', { icon: '⚠️', style: { background: '#FEF3C7', color: '#92400E' } });
+        }
+        if (newTime === 0) {
+          playAlert('timeout');
+          toast.error("⏰ Time's up! Moving to next card");
+          handleTimeout();
+        }
+        return newTime;
+      });
+    }, 1000);
+    timerRef.current = id;
+    return () => { if (id) clearTimeout(id); };
+  }, [timerActive, timerPaused, currentTime]);
+
+  /* =========================
+     Utils
+  ========================= */
+  const cleanText = (str: string) => {
+    if (!str) return '';
+    return str
+      .replace(/```(?:json)?/g, '')
+      .replace(/^[\{\[\"\']|[\}\]\"\']$/g, '')
+      .replace(/\\n/g, '\n')
+      .replace(/\\"/g, '"')
+      .replace(/^(question|answer)[":\s]+/gi, '')
+      .replace(/^\d+[\.\)]\s*/, '')
+      .trim();
+  };
+
+  const parseAIFlashcards = (aiCards: AIFlashcard[]): AIFlashcard[] => aiCards.map(card => {
+    let question = cleanText(card.question);
+    let answer = cleanText(card.answer);
+    if (!question && answer.includes('?')) {
+      const parts = answer.split(/\n\s*(?:answer|a)[:.\s]+/i);
+      if (parts.length >= 2) { question = cleanText(parts[0]); answer = cleanText(parts[1]); }
+    }
+    if (question.toLowerCase().includes('answer:')) {
+      const parts = question.split(/answer\s*[:.\s]+/i);
+      question = cleanText(parts[0]); if (parts[1] && !answer) answer = cleanText(parts[1]);
+    }
+    if (answer.toLowerCase().includes('question:')) {
+      const parts = answer.split(/question\s*[:.\s]+/i);
+      answer = cleanText(parts[0]); if (parts[1] && !question) question = cleanText(parts[1]);
+    }
+    return { question: question || 'Question not properly formatted', answer: answer || 'Answer not properly formatted' };
+  });
+
+  const playAlert = (type: 'warning' | 'timeout' | 'correct' | 'incorrect') => {
+    const ctx = audioContextRef.current;
+    if (!ctx) return;
+    const oscillator = ctx.createOscillator();
+    const gain = ctx.createGain();
+    oscillator.connect(gain); gain.connect(ctx.destination);
+    let frequency = 440; let duration = 0.2;
+    switch (type) {
+      case 'warning': frequency = 800; duration = 0.3; break;
+      case 'timeout': frequency = 300; duration = 0.8; break;
+      case 'correct': frequency = 600; duration = 0.2; break;
+      case 'incorrect': frequency = 200; duration = 0.4; break;
+    }
+    oscillator.frequency.setValueAtTime(frequency, ctx.currentTime);
+    oscillator.type = 'sine';
+    gain.gain.setValueAtTime(0.25, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + duration);
+    oscillator.start();
+    oscillator.stop(ctx.currentTime + duration);
+  };
+
+  /* =========================
+     CRUD
+  ========================= */
   const createFolder = async () => {
     if (!user || !newFolder.name.trim()) return;
     try {
@@ -346,24 +314,25 @@ export const Flashcards: React.FC = () => {
     }
   };
 
-  // ─── Manual flashcard CRUD ──────────────────────────────────
   const createFlashcard = async () => {
     if (!user || !selectedFolder) return;
     if (!newCard.question.trim() || !newCard.answer.trim()) return;
     try {
+      const payload = {
+        question: cleanText(newCard.question),
+        answer: cleanText(newCard.answer),
+        user_id: user.id,
+        folder_id: selectedFolder.id,
+        subject: selectedFolder.subject,
+        difficulty: 1,
+        review_count: 0,
+        correct_count: 0,
+        next_review: new Date().toISOString(),
+      } as const;
+
       const { data, error } = await supabase
         .from('flashcards')
-        .insert({
-          question: cleanText(newCard.question),
-          answer: cleanText(newCard.answer),
-          user_id: user.id,
-          folder_id: selectedFolder.id,
-          subject: selectedFolder.subject,
-          difficulty: 1,
-          review_count: 0,
-          correct_count: 0,
-          next_review: new Date().toISOString(),
-        })
+        .insert(payload)
         .select()
         .single();
       if (error) throw error;
@@ -371,17 +340,13 @@ export const Flashcards: React.FC = () => {
       setNewCard({ question: '', answer: '' });
       setShowCreateCard(false);
       toast.success('Card created');
-      const { error: xpError } = await supabase.from('xp_events').insert([{
-  user_id: user.id,
-  source: 'flashcard',
-  amount: 5,
-  description: 'Created flashcard',
-}]);
 
-if (xpError) {
-  console.error('XP insert failed:', xpError);
-  toast.error('Could not record XP event');
-}
+      await supabase.from('xp_events').insert([{ // best-effort; ignore failure
+        user_id: user.id,
+        source: 'flashcards',
+        amount: 5,
+        description: 'Created flashcard',
+      }]);
     } catch (e) {
       console.error(e);
       toast.error('Could not create card');
@@ -400,35 +365,39 @@ if (xpError) {
     }
   };
 
-  // ─── Review logic ───────────────────────────────────────────
+  /* =========================
+     Review / SRS
+  ========================= */
+  const handleTimeout = () => {
+    setSessionStats(prev => ({ ...prev, incorrect: prev.incorrect + 1, total: prev.total + 1 }));
+    markCardCorrect(false);
+  };
+
+  const startTimer = () => { setTimerActive(true); setTimerPaused(false); setCurrentTime(studyTimer); };
+  const pauseTimer = () => setTimerPaused(true);
+  const resumeTimer = () => setTimerPaused(false);
+  const stopTimer = () => { setTimerActive(false); setTimerPaused(false); setCurrentTime(studyTimer); };
+
   const markCardCorrect = async (correct: boolean) => {
     const card = flashcards[currentCardIndex];
     if (!card) return;
 
-    // Play sound and show toast
-    if (correct) {
-      playAlert('correct');
-      toast.success('✅ Correct!');
-    } else {
-      playAlert('incorrect');
-      toast.error('❌ Incorrect');
-    }
+    // Feedback
+    playAlert(correct ? 'correct' : 'incorrect');
+    correct ? toast.success('✅ Correct!') : toast.error('❌ Incorrect');
 
-    // Update session stats
     setSessionStats(prev => ({
       correct: correct ? prev.correct + 1 : prev.correct,
       incorrect: correct ? prev.incorrect : prev.incorrect + 1,
-      total: prev.total + 1
+      total: prev.total + 1,
     }));
 
     try {
       const newReview = card.review_count + 1;
       const newCorrect = correct ? card.correct_count + 1 : card.correct_count;
-      const newDiff = correct
-        ? Math.max(1, card.difficulty - 0.1)
-        : Math.min(5, card.difficulty + 0.2);
+      const newDiff = correct ? Math.max(1, card.difficulty - 0.1) : Math.min(5, card.difficulty + 0.2);
       const nextDate = new Date();
-      nextDate.setDate(nextDate.getDate() + Math.floor(newDiff));
+      nextDate.setDate(nextDate.getDate() + Math.max(1, Math.floor(newDiff)));
 
       const { error } = await supabase
         .from('flashcards')
@@ -442,104 +411,68 @@ if (xpError) {
         .eq('id', card.id);
       if (error) throw error;
 
-      setFlashcards(prev =>
-        prev.map(c =>
-          c.id === card.id
-            ? { ...c, review_count: newReview, correct_count: newCorrect, difficulty: newDiff }
-            : c
-        )
-      );
-      console.log("XP insert payload", {
-  user_id: user!.id,
-  source: 'flashcard',
-  amount: 5,
-  description: 'Created flashcard',
-});
+      setFlashcards(prev => prev.map(c => c.id === card.id
+        ? { ...c, review_count: newReview, correct_count: newCorrect, difficulty: newDiff, last_reviewed: new Date().toISOString(), next_review: nextDate.toISOString() }
+        : c));
 
-   const { error: xpError } = await supabase
-  .from('xp_events')
-  .insert([{
-    user_id: user!.id,
-    source: 'flashcard_test',       // ← must match CHECK constraint
-    amount: correct ? 3 : 1,
-    description: correct
-      ? 'Reviewed flashcard correctly'
-      : 'Reviewed flashcard incorrectly',
-  }]);
+      // XP (best-effort)
+      if (user) {
+        await supabase.from('xp_events').insert([{
+          user_id: user.id,
+          source: 'flashcards',
+          amount: correct ? 3 : 1,
+          description: correct ? 'Reviewed flashcard correctly' : 'Reviewed flashcard incorrectly',
+        }]);
+      }
 
-if (xpError) {
-  console.error('XP insert failed:', xpError);
-}
-
-      
-      // Auto advance after short delay
-      setTimeout(() => {
-        nextCard();
-      }, 1000);
+      setTimeout(() => nextCard(), 600);
     } catch (e) {
       console.error(e);
       toast.error('Could not update card');
     }
   };
 
-  // ─── Navigation ────────────────────────────────────────────
   const nextCard = () => {
     if (currentCardIndex < flashcards.length - 1) {
       setCurrentCardIndex(i => i + 1);
       setShowAnswer(false);
-      if (studyMode) {
-        setCurrentTime(studyTimer);
-      }
-    } else {
-      // End of session
-      if (studyMode) {
-        setStudyMode(false);
-        setTimerActive(false);
-        toast.success(`Session complete! Score: ${sessionStats.correct}/${sessionStats.total}`);
-      }
+      if (studyMode) setCurrentTime(studyTimer);
+    } else if (studyMode) {
+      setStudyMode(false);
+      setTimerActive(false);
+      toast.success(`Session complete! Score: ${sessionStats.correct}/${sessionStats.total}`);
     }
   };
 
   const prevCard = () => {
-    if (currentCardIndex > 0) {
-      setCurrentCardIndex(i => i - 1);
-      setShowAnswer(false);
-      if (studyMode) {
-        setCurrentTime(studyTimer);
-      }
-    }
+    if (currentCardIndex === 0) return;
+    setCurrentCardIndex(i => i - 1);
+    setShowAnswer(false);
+    if (studyMode) setCurrentTime(studyTimer);
   };
 
   const resetStudySession = () => {
     setCurrentCardIndex(0);
     setShowAnswer(false);
     setSessionStats({ correct: 0, incorrect: 0, total: 0 });
-    if (studyMode) {
-      setCurrentTime(studyTimer);
-    }
+    if (studyMode) setCurrentTime(studyTimer);
   };
 
-  // ─── AI flashcards from notes ──────────────────────────────
+  /* =========================
+     AI: Generate & Insights (Pro/Elite)
+  ========================= */
+  const canUseAI = tier === 'Pro' || tier === 'Elite';
+
   const generateFromNotes = async () => {
     if (!selectedFolder || !notes.trim()) return;
-    setGenerating(true);
-    setGenerateProgress(0);
-    setCurrentlyGenerating(0);
-    setTotalToGenerate(10); // Default number of cards to generate
+    if (!canUseAI) { toast('Upgrade to Pro to generate with AI'); return; }
 
+    setGenerating(true); setGenerateProgress(0); setCurrentlyGenerating(0); setTotalToGenerate(10);
     try {
-      // 1) Ask AI for flashcards and parse them properly
-      const rawAiCards: AIFlashcard[] = await aiService.generateFlashcards(
-        notes,
-        selectedFolder.subject,
-        10
-      );
-      
+      const rawAiCards: AIFlashcard[] = await aiService.generateFlashcards(notes, selectedFolder.subject, 10);
       const aiCards = parseAIFlashcards(rawAiCards);
-
       setTotalToGenerate(aiCards.length);
 
-      // 2) Insert one-by-one & update progress
       const inserted: Flashcard[] = [];
       for (let i = 0; i < aiCards.length; i++) {
         setCurrentlyGenerating(i + 1);
@@ -547,35 +480,15 @@ if (xpError) {
         setGenerateProgress(progress);
 
         const { question, answer } = aiCards[i];
-        const cleanQ = cleanText(question);
-        const cleanA = cleanText(answer);
-
         const { data, error } = await supabase
           .from('flashcards')
-          .insert([
-            {
-              user_id: user!.id,
-              folder_id: selectedFolder.id,
-              subject: selectedFolder.subject,
-              question: cleanQ,
-              answer: cleanA,
-              difficulty: 1,
-              review_count: 0,
-              correct_count: 0,
-              next_review: new Date().toISOString(),
-            },
-          ])
+          .insert([{ user_id: user!.id, folder_id: selectedFolder.id, subject: selectedFolder.subject, question: cleanText(question), answer: cleanText(answer), difficulty: 1, review_count: 0, correct_count: 0, next_review: new Date().toISOString() }])
           .select()
           .single();
-
         if (error) throw error;
         inserted.push(data);
-        
-        // Small delay to show progress
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(r => setTimeout(r, 80));
       }
-
-      // 3) Prepend and reset
       setFlashcards(prev => [...inserted, ...prev]);
       setNotes('');
       toast.success(`Generated ${inserted.length} flashcards from your notes!`);
@@ -583,14 +496,74 @@ if (xpError) {
       console.error(e);
       toast.error('Failed to generate from notes');
     } finally {
-      setGenerating(false);
-      setGenerateProgress(0);
-      setCurrentlyGenerating(0);
-      setTotalToGenerate(0);
+      setGenerating(false); setGenerateProgress(0); setCurrentlyGenerating(0); setTotalToGenerate(0);
     }
   };
 
-  // ─── Loading spinner ───────────────────────────────────────
+  const buildPerformanceSnapshot = () => {
+    const total = flashcards.length;
+    const attempts = flashcards.reduce((s, c) => s + (c.review_count || 0), 0);
+    const correct = flashcards.reduce((s, c) => s + (c.correct_count || 0), 0);
+    const avgDiff = total ? flashcards.reduce((s, c) => s + (c.difficulty || 1), 0) / total : 0;
+    const due = dueToday.length;
+    return { total, attempts, correct, avgDiff: +avgDiff.toFixed(2), due };
+  };
+
+  const requestInsights = async () => {
+    if (!canUseAI) { toast('Insights are for Pro/Elite'); return; }
+    if (!selectedFolder) return;
+    setInsightsLoading(true); setInsightsText('');
+    try {
+      const snapshot = buildPerformanceSnapshot();
+      const prompt = `You are a study coach analyzing flashcard performance for IB-level content. Given this snapshot and a small sample of cards, find patterns in mistakes, suggest categories to prioritize, and propose a 7-day plan with daily targets. Snapshot: ${JSON.stringify(snapshot)}. Sample cards: ${JSON.stringify(flashcards.slice(0, 20).map(c => ({ q: c.question, a: c.answer, rc: c.review_count, cc: c.correct_count, d: c.difficulty })))}.`;
+
+      // Prefer a dedicated method if available; else fall back to a generic chat
+      // @ts-ignore
+      const hasMethod = typeof aiService?.flashcardInsights === 'function';
+      let text = '';
+      if (hasMethod) {
+        // @ts-ignore
+        text = await aiService.flashcardInsights(prompt);
+      } else if (typeof (aiService as any)?.chat === 'function') {
+        // @ts-ignore
+        text = await (aiService as any).chat(prompt);
+      } else {
+        text = 'AI insights service is not wired yet. Please add aiService.flashcardInsights or aiService.chat.';
+      }
+      setInsightsText(String(text || '')); setShowInsights(true);
+    } catch (e) {
+      console.error(e);
+      toast.error('Could not get insights');
+    } finally { setInsightsLoading(false); }
+  };
+
+  /* =========================
+     CSV Export / Import (optional quality-of-life)
+  ========================= */
+  const exportCSV = () => {
+    if (!flashcards.length) { toast('No cards to export'); return; }
+    const rows = [['Question', 'Answer', 'Difficulty', 'ReviewCount', 'CorrectCount', 'NextReview']];
+    flashcards.forEach(c => rows.push([c.question, c.answer, String(c.difficulty), String(c.review_count), String(c.correct_count), c.next_review]));
+    const csv = rows.map(r => r.map(v => '"' + (v || '').replace(/"/g, '""') + '"').join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `${selectedFolder?.name || 'flashcards'}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  /* =========================
+     Render
+  ========================= */
+  if (!user) {
+    return (
+      <div className="max-w-xl mx-auto p-8 text-center">
+        <ShieldCheck className="w-10 h-10 mx-auto mb-3 text-gray-400" />
+        <h2 className="text-xl font-semibold">Please sign in</h2>
+        <p className="text-gray-500">Log in to access your flashcards.</p>
+      </div>
+    );
+  }
+
   if (loading) {
     return (
       <div className="flex justify-center items-center h-64">
@@ -599,235 +572,96 @@ if (xpError) {
     );
   }
 
-  // ─── STUDY MODE ────────────────────────────────────────────
+  // ===== Study Mode =====
   if (studyMode && selectedFolder && flashcards.length > 0) {
     const card = flashcards[currentCardIndex];
-    const progress = ((currentCardIndex + 1) / flashcards.length) * 100;
     const timePercentage = (currentTime / studyTimer) * 100;
-    
+
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-purple-50 p-4">
         <div className="max-w-4xl mx-auto space-y-6">
-          {/* Enhanced Header */}
+          {/* Header */}
           <div className="bg-white rounded-2xl shadow-lg p-6 border border-gray-100">
             <div className="flex items-center justify-between mb-6">
               <div className="flex items-center space-x-4">
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setStudyMode(false);
-                    stopTimer();
-                  }}
-                  className="hover:bg-gray-50"
-                >
-                  <ChevronLeft className="w-4 h-4 mr-2" />
-                  Exit Study
+                <Button variant="outline" onClick={() => { setStudyMode(false); stopTimer(); }} className="hover:bg-gray-50">
+                  <ChevronLeft className="w-4 h-4 mr-2" /> Exit Study
                 </Button>
                 <div>
                   <h1 className="text-2xl font-bold text-gray-800">{selectedFolder.name}</h1>
                   <p className="text-gray-500">{selectedFolder.subject}</p>
                 </div>
               </div>
-              
-              {/* Session Stats */}
               <div className="flex items-center space-x-6">
-                <div className="text-center">
-                  <div className="text-2xl font-bold text-green-600">{sessionStats.correct}</div>
-                  <div className="text-xs text-gray-500">Correct</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-2xl font-bold text-red-500">{sessionStats.incorrect}</div>
-                  <div className="text-xs text-gray-500">Incorrect</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-2xl font-bold text-blue-600">{sessionStats.total}</div>
-                  <div className="text-xs text-gray-500">Total</div>
-                </div>
+                <div className="text-center"><div className="text-2xl font-bold text-green-600">{sessionStats.correct}</div><div className="text-xs text-gray-500">Correct</div></div>
+                <div className="text-center"><div className="text-2xl font-bold text-red-500">{sessionStats.incorrect}</div><div className="text-xs text-gray-500">Incorrect</div></div>
+                <div className="text-center"><div className="text-2xl font-bold text-blue-600">{sessionStats.total}</div><div className="text-xs text-gray-500">Total</div></div>
               </div>
             </div>
-
-            {/* Progress Bar */}
             <div className="space-y-2">
-              <div className="flex justify-between text-sm text-gray-600">
-                <span>Progress</span>
-                <span>{currentCardIndex + 1} of {flashcards.length}</span>
-              </div>
+              <div className="flex justify-between text-sm text-gray-600"><span>Progress</span><span>{currentCardIndex + 1} of {flashcards.length}</span></div>
               <div className="w-full bg-gray-200 rounded-full h-3">
-                <div
-                  className="bg-gradient-to-r from-purple-500 to-blue-500 h-3 rounded-full transition-all duration-300 relative overflow-hidden"
-                  style={{ width: `${progress}%` }}
-                >
+                <div className="bg-gradient-to-r from-purple-500 to-blue-500 h-3 rounded-full transition-all duration-300 relative overflow-hidden" style={{ width: `${progressPct}%` }}>
                   <div className="absolute inset-0 bg-white bg-opacity-20 animate-pulse" />
                 </div>
               </div>
             </div>
           </div>
 
-          {/* Timer Section */}
+          {/* Timer */}
           <div className="bg-white rounded-2xl shadow-lg p-6 border border-gray-100">
             <div className="flex items-center justify-between">
               <div className="flex items-center space-x-4">
-                <div className={`relative w-20 h-20 rounded-full flex items-center justify-center ${
-                  currentTime <= 10 ? 'bg-red-100 text-red-700 animate-pulse' : 
-                  currentTime <= 20 ? 'bg-yellow-100 text-yellow-700' : 
-                  'bg-green-100 text-green-700'
-                }`}>
-                  {/* Circular progress */}
+                <div className={`relative w-20 h-20 rounded-full flex items-center justify-center ${currentTime <= 10 ? 'bg-red-100 text-red-700 animate-pulse' : currentTime <= 20 ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700'}`}>
                   <svg className="absolute inset-0 w-20 h-20 transform -rotate-90" viewBox="0 0 36 36">
-                    <path
-                      className="text-gray-200"
-                      stroke="currentColor"
-                      strokeWidth="3"
-                      fill="none"
-                      d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
-                    />
-                    <path
-                      className={currentTime <= 10 ? 'text-red-500' : currentTime <= 20 ? 'text-yellow-500' : 'text-green-500'}
-                      stroke="currentColor"
-                      strokeWidth="3"
-                      strokeLinecap="round"
-                      fill="none"
-                      strokeDasharray={`${timePercentage}, 100`}
-                      d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
-                    />
+                    <path className="text-gray-200" stroke="currentColor" strokeWidth="3" fill="none" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                    <path className={currentTime <= 10 ? 'text-red-500' : currentTime <= 20 ? 'text-yellow-500' : 'text-green-500'} stroke="currentColor" strokeWidth="3" strokeLinecap="round" fill="none" strokeDasharray={`${timePercentage}, 100`} d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
                   </svg>
-                  <div className="text-center">
-                    <div className="text-lg font-bold">
-                      {Math.floor(currentTime / 60)}:{(currentTime % 60).toString().padStart(2, '0')}
-                    </div>
-                  </div>
+                  <div className="text-center"><div className="text-lg font-bold">{Math.floor(currentTime / 60)}:{(currentTime % 60).toString().padStart(2, '0')}</div></div>
                 </div>
-                
                 <div>
                   <h3 className="font-semibold text-gray-800">Study Timer</h3>
-                  <p className="text-sm text-gray-500">
-                    {timerActive ? (timerPaused ? 'Paused' : 'Running') : 'Stopped'}
-                  </p>
+                  <p className="text-sm text-gray-500">{timerActive ? (timerPaused ? 'Paused' : 'Running') : 'Stopped'}</p>
                 </div>
               </div>
-              
-              {/* Timer Controls */}
               <div className="flex items-center space-x-3">
-                <select
-                  value={studyTimer}
-                  onChange={(e) => {
-                    const newTimer = parseInt(e.target.value);
-                    setStudyTimer(newTimer);
-                    if (!timerActive) setCurrentTime(newTimer);
-                  }}
-                  className="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500"
-                >
-                  <option value={15}>15s</option>
-                  <option value={30}>30s</option>
-                  <option value={45}>45s</option>
-                  <option value={60}>1m</option>
-                  <option value={90}>1.5m</option>
-                  <option value={120}>2m</option>
+                <select value={studyTimer} onChange={(e) => { const t = parseInt(e.target.value); setStudyTimer(t); if (!timerActive) setCurrentTime(t); }} className="border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500">
+                  <option value={15}>15s</option><option value={30}>30s</option><option value={45}>45s</option><option value={60}>1m</option><option value={90}>1.5m</option><option value={120}>2m</option>
                 </select>
-                
                 {!timerActive ? (
-                  <Button onClick={startTimer} className="bg-green-500 hover:bg-green-600">
-                    <Play className="w-4 h-4 mr-2" />
-                    Start
-                  </Button>
+                  <Button onClick={startTimer} className="bg-green-500 hover:bg-green-600"><Play className="w-4 h-4 mr-2" /> Start</Button>
                 ) : timerPaused ? (
-                  <Button onClick={resumeTimer} className="bg-blue-500 hover:bg-blue-600">
-                    <Play className="w-4 h-4 mr-2" />
-                    Resume
-                  </Button>
+                  <Button onClick={resumeTimer} className="bg-blue-500 hover:bg-blue-600"><Play className="w-4 h-4 mr-2" /> Resume</Button>
                 ) : (
-                  <Button onClick={pauseTimer} variant="outline">
-                    <Pause className="w-4 h-4 mr-2" />
-                    Pause
-                  </Button>
+                  <Button onClick={pauseTimer} variant="outline"><Pause className="w-4 h-4 mr-2" /> Pause</Button>
                 )}
-                
-                <Button onClick={stopTimer} variant="outline">
-                  <Square className="w-4 h-4 mr-2" />
-                  Stop
-                </Button>
+                <Button onClick={stopTimer} variant="outline"><Square className="w-4 h-4 mr-2" /> Stop</Button>
               </div>
             </div>
           </div>
 
-          {/* Enhanced Flashcard */}
+          {/* Card */}
           <AnimatePresence mode="wait">
-            <motion.div
-              key={currentCardIndex}
-              initial={{ opacity: 0, x: 300 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -300 }}
-              transition={{ type: "spring", stiffness: 300, damping: 30 }}
-              className="relative"
-            >
-              <div 
-                className={`bg-white rounded-3xl shadow-xl p-8 min-h-[400px] cursor-pointer transition-all duration-300 border-2 ${
-                  currentTime <= 10 ? 'border-red-300 shadow-red-100' : 
-                  'border-gray-100 hover:border-purple-200'
-                } ${showAnswer ? 'bg-gradient-to-br from-blue-50 to-indigo-50' : 'bg-gradient-to-br from-purple-50 to-pink-50'}`}
-                onClick={() => setShowAnswer(!showAnswer)}
-              >
-                {/* Card Header */}
+            <motion.div key={currentCardIndex} initial={{ opacity: 0, x: 300 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -300 }} transition={{ type: 'spring', stiffness: 300, damping: 30 }} className="relative">
+              <div className={`bg-white rounded-3xl shadow-xl p-8 min-h-[400px] cursor-pointer transition-all duration-300 border-2 ${currentTime <= 10 ? 'border-red-300 shadow-red-100' : 'border-gray-100 hover:border-purple-200'} ${showAnswer ? 'bg-gradient-to-br from-blue-50 to-indigo-50' : 'bg-gradient-to-br from-purple-50 to-pink-50'}`} onClick={() => setShowAnswer(!showAnswer)}>
                 <div className="text-center mb-8">
-                  <div className={`inline-flex items-center px-4 py-2 rounded-full text-sm font-medium ${
-                    showAnswer ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'
-                  }`}>
-                    {showAnswer ? (
-                      <>
-                        <CheckCircle className="w-4 h-4 mr-2" />
-                        Answer
-                      </>
-                    ) : (
-                      <>
-                        <Brain className="w-4 h-4 mr-2" />
-                        Question
-                      </>
-                    )}
+                  <div className={`inline-flex items-center px-4 py-2 rounded-full text-sm font-medium ${showAnswer ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'}`}>
+                    {showAnswer ? (<><CheckCircle className="w-4 h-4 mr-2" /> Answer</>) : (<><Brain className="w-4 h-4 mr-2" /> Question</>)}
                   </div>
                 </div>
-
-                {/* Card Content */}
                 <div className="text-center space-y-6">
                   {showAnswer ? (
                     <div className="space-y-8">
-                      <div className="text-xl leading-relaxed text-gray-800 font-medium">
-                        {cleanText(card.answer)}
-                      </div>
-                      
-                      {/* Enhanced Action Buttons */}
+                      <div className="text-xl leading-relaxed text-gray-800 font-medium">{cleanText(card.answer)}</div>
                       <div className="flex justify-center space-x-4">
-                        <Button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            markCardCorrect(false);
-                          }}
-                          className="bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white px-8 py-4 text-lg font-semibold rounded-2xl shadow-lg transform transition-all hover:scale-105"
-                        >
-                          <XCircle className="w-5 h-5 mr-3" />
-                          Incorrect
-                        </Button>
-                        <Button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            markCardCorrect(true);
-                          }}
-                          className="bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white px-8 py-4 text-lg font-semibold rounded-2xl shadow-lg transform transition-all hover:scale-105"
-                        >
-                          <CheckCircle className="w-5 h-5 mr-3" />
-                          Correct
-                        </Button>
+                        <Button onClick={(e) => { e.stopPropagation(); markCardCorrect(false); }} className="bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white px-8 py-4 text-lg font-semibold rounded-2xl shadow-lg transform transition-all hover:scale-105"><XCircle className="w-5 h-5 mr-3" /> Incorrect</Button>
+                        <Button onClick={(e) => { e.stopPropagation(); markCardCorrect(true); }} className="bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white px-8 py-4 text-lg font-semibold rounded-2xl shadow-lg transform transition-all hover:scale-105"><CheckCircle className="w-5 h-5 mr-3" /> Correct</Button>
                       </div>
                     </div>
                   ) : (
                     <div className="space-y-8">
-                      <div className="text-xl leading-relaxed text-gray-800 font-medium min-h-[120px] flex items-center justify-center">
-                        {cleanText(card.question)}
-                      </div>
-                      
-                      <div className="flex items-center justify-center text-gray-500 bg-white bg-opacity-50 rounded-full px-6 py-3">
-                        <Eye className="w-5 h-5 mr-2" />
-                        <span className="text-lg">Click to reveal answer</span>
-                      </div>
+                      <div className="text-xl leading-relaxed text-gray-800 font-medium min-h-[120px] flex items-center justify-center">{cleanText(card.question)}</div>
+                      <div className="flex items-center justify-center text-gray-500 bg-white bg-opacity-50 rounded-full px-6 py-3"><Eye className="w-5 h-5 mr-2" /><span className="text-lg">Click or press Space to reveal</span></div>
                     </div>
                   )}
                 </div>
@@ -835,49 +669,16 @@ if (xpError) {
             </motion.div>
           </AnimatePresence>
 
-          {/* Enhanced Navigation */}
+          {/* Navigation */}
           <div className="bg-white rounded-2xl shadow-lg p-6 border border-gray-100">
             <div className="flex items-center justify-between">
-              <Button
-                variant="outline"
-                onClick={prevCard}
-                disabled={currentCardIndex === 0}
-                className="px-6 py-3 rounded-xl"
-              >
-                <ChevronLeft className="w-5 h-5 mr-2" />
-                Previous
-              </Button>
-
+              <Button variant="outline" onClick={prevCard} disabled={currentCardIndex === 0} className="px-6 py-3 rounded-xl"><ChevronLeft className="w-5 h-5 mr-2" /> Previous</Button>
               <div className="flex items-center space-x-4">
-                <Button 
-                  variant="outline" 
-                  onClick={resetStudySession}
-                  className="px-6 py-3 rounded-xl"
-                >
-                  <RotateCcw className="w-5 h-5 mr-2" />
-                  Reset Session
-                </Button>
-                
+                <Button variant="outline" onClick={resetStudySession} className="px-6 py-3 rounded-xl"><RotateCcw className="w-5 h-5 mr-2" /> Reset Session</Button>
                 {currentCardIndex === flashcards.length - 1 ? (
-                  <Button
-                    onClick={() => {
-                      setStudyMode(false);
-                      setTimerActive(false);
-                      toast.success(`🎉 Session Complete! Final Score: ${sessionStats.correct}/${sessionStats.total}`);
-                    }}
-                    className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-6 py-3 rounded-xl"
-                  >
-                    Finish Session
-                  </Button>
+                  <Button onClick={() => { setStudyMode(false); setTimerActive(false); toast.success(`🎉 Session Complete! Final Score: ${sessionStats.correct}/${sessionStats.total}`); }} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-6 py-3 rounded-xl">Finish Session</Button>
                 ) : (
-                  <Button
-                    variant="outline"
-                    onClick={nextCard}
-                    className="px-6 py-3 rounded-xl"
-                  >
-                    Next
-                    <ChevronRight className="w-5 h-5 ml-2" />
-                  </Button>
+                  <Button variant="outline" onClick={nextCard} className="px-6 py-3 rounded-xl">Next <ChevronRight className="w-5 h-5 ml-2" /></Button>
                 )}
               </div>
             </div>
@@ -887,134 +688,76 @@ if (xpError) {
     );
   }
 
-  // ─── FOLDER VIEW ───────────────────────────────────────────
+  // ===== Folder View =====
   if (selectedFolder) {
+    const sorted = [...flashcards].sort((a, b) => new Date(a.next_review).getTime() - new Date(b.next_review).getTime());
+    const snapshot = buildPerformanceSnapshot();
+
     return (
       <div className="max-w-4xl mx-auto p-6 space-y-6">
         {/* Header */}
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-4">
-            <Button
-              variant="outline"
-              onClick={() => setSelectedFolder(null)}
-            >
-              <ChevronLeft className="w-4 h-4 mr-2" />
-              Back to Folders
-            </Button>
+            <Button variant="outline" onClick={() => setSelectedFolder(null)}><ChevronLeft className="w-4 h-4 mr-2" /> Back to Folders</Button>
             <div>
               <h1 className="text-2xl font-bold">{selectedFolder.name}</h1>
               <p className="text-gray-600">{selectedFolder.subject}</p>
             </div>
           </div>
-          
-          {flashcards.length > 0 && (
-            <Button
-              onClick={() => {
-                setStudyMode(true);
-                setSessionStats({ correct: 0, incorrect: 0, total: 0 });
-                setCurrentTime(studyTimer);
-              }}
-              className="bg-gradient-to-r from-purple-500 to-pink-500 text-white"
-            >
-              <Play className="w-4 h-4 mr-2" />
-              Start Study Session
-            </Button>
-          )}
+          <div className="flex items-center gap-3">
+            {flashcards.length > 0 && (
+              <Button onClick={() => { setStudyMode(true); setSessionStats({ correct: 0, incorrect: 0, total: 0 }); setCurrentTime(studyTimer); }} className="bg-gradient-to-r from-purple-500 to-pink-500 text-white"><Play className="w-4 h-4 mr-2" /> Start Study</Button>
+            )}
+            <Button variant="outline" onClick={exportCSV}><Download className="w-4 h-4 mr-2" /> Export</Button>
+          </div>
         </div>
 
-        {/* Notes & AI Generation */}
+        {/* Insights (Pro/Elite) */}
         <Card>
           <CardHeader>
-            <CardTitle className="flex items-center">
-              <Brain className="w-5 h-5 mr-2" />
-              AI Flashcard Generator
-            </CardTitle>
+            <CardTitle className="flex items-center"><Brain className="w-5 h-5 mr-2" />AI Flashcard Generator & Insights {canUseAI ? (<span className="ml-2 text-xs text-green-600 inline-flex items-center"><ShieldCheck className="w-3 h-3 mr-1" /> Pro</span>) : (<span className="ml-2 text-xs text-gray-500">Free</span>)}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <textarea
-              value={notes}
-              onChange={e => setNotes(e.target.value)}
-              placeholder="Paste or write your study notes here, and AI will generate flashcards for you..."
-              className="w-full border rounded-lg p-3 h-32 resize-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-              disabled={generating}
-            />
-            
+            <textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="Paste or write your study notes here..." className="w-full border rounded-lg p-3 h-32 resize-none focus:ring-2 focus:ring-purple-500 focus:border-transparent" disabled={generating} />
             {generating && (
               <div className="space-y-2">
-                <div className="flex items-center justify-between text-sm">
-                  <span>Generating flashcards...</span>
-                  <span>{currentlyGenerating}/{totalToGenerate}</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div
-                    className="bg-purple-600 h-2 rounded-full transition-all duration-300"
-                    style={{ width: `${generateProgress}%` }}
-                  />
-                </div>
-                <p className="text-xs text-gray-500">
-                  Creating card {currentlyGenerating} of {totalToGenerate} ({generateProgress}%)
-                </p>
+                <div className="flex items-center justify-between text-sm"><span>Generating flashcards...</span><span>{currentlyGenerating}/{totalToGenerate}</span></div>
+                <div className="w-full bg-gray-200 rounded-full h-2"><div className="bg-purple-600 h-2 rounded-full transition-all duration-300" style={{ width: `${generateProgress}%` }} /></div>
+                <p className="text-xs text-gray-500">Creating card {currentlyGenerating} of {totalToGenerate} ({generateProgress}%)</p>
               </div>
             )}
-            
-            <Button
-              onClick={generateFromNotes}
-              disabled={!notes.trim() || generating}
-              className="w-full"
-            >
-              {generating ? (
-                <>
-                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2" />
-                  Generating Cards... ({generateProgress}%)
-                </>
-              ) : (
-                <>
-                  <Brain className="w-4 h-4 mr-2" />
-                  Generate Flashcards with AI
-                </>
-              )}
-            </Button>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <Button onClick={generateFromNotes} disabled={!notes.trim() || generating} className="w-full"><Brain className="w-4 h-4 mr-2" /> Generate with AI</Button>
+              <Button onClick={requestInsights} disabled={insightsLoading} variant="outline" className="w-full">
+                {insightsLoading ? (<><div className="animate-spin rounded-full h-4 w-4 border-b-2 border-current mr-2" /> Getting Insights...</>) : (<><Sparkles className="w-4 h-4 mr-2" /> Analyze My Weak Spots</>)}
+              </Button>
+              <Button onClick={() => setShowInsights(true)} variant="outline" className="w-full"><Eye className="w-4 h-4 mr-2" /> View Latest Insights</Button>
+            </div>
+            {insightsText && (
+              <div className="p-4 rounded-xl bg-gradient-to-br from-indigo-50 to-purple-50 border border-indigo-100 text-sm whitespace-pre-wrap">{insightsText}</div>
+            )}
           </CardContent>
         </Card>
 
+        {/* Quick Stats */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <Card><CardContent className="p-4"><div className="text-xs text-gray-500">Total cards</div><div className="text-2xl font-semibold">{snapshot.total}</div></CardContent></Card>
+          <Card><CardContent className="p-4"><div className="text-xs text-gray-500">Due today</div><div className="text-2xl font-semibold">{snapshot.due}</div></CardContent></Card>
+          <Card><CardContent className="p-4"><div className="text-xs text-gray-500">Attempts</div><div className="text-2xl font-semibold">{snapshot.attempts}</div></CardContent></Card>
+          <Card><CardContent className="p-4"><div className="text-xs text-gray-500">Avg. difficulty</div><div className="text-2xl font-semibold">{snapshot.avgDiff}</div></CardContent></Card>
+        </div>
+
         {/* Manual card creation */}
         <div className="flex justify-between items-center">
-          <h2 className="text-xl font-semibold">
-            Flashcards ({flashcards.length})
-          </h2>
+          <h2 className="text-xl font-semibold">Flashcards ({flashcards.length})</h2>
           <Dialog open={showCreateCard} onOpenChange={setShowCreateCard}>
-            <DialogTrigger asChild>
-              <Button>
-                <Plus className="w-4 h-4 mr-2" />
-                Add Card
-              </Button>
-            </DialogTrigger>
+            <DialogTrigger asChild><Button><Plus className="w-4 h-4 mr-2" /> Add Card</Button></DialogTrigger>
             <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Create New Flashcard</DialogTitle>
-              </DialogHeader>
+              <DialogHeader><DialogTitle>Create New Flashcard</DialogTitle></DialogHeader>
               <div className="space-y-4">
-                <div>
-                  <label className="text-sm font-medium">Question</label>
-                  <textarea
-                    value={newCard.question}
-                    onChange={e => setNewCard({ ...newCard, question: e.target.value })}
-                    className="w-full border rounded p-2 mt-1"
-                    rows={3}
-                  />
-                </div>
-                <div>
-                  <label className="text-sm font-medium">Answer</label>
-                  <textarea
-                    value={newCard.answer}
-                    onChange={e => setNewCard({ ...newCard, answer: e.target.value })}
-                    className="w-full border rounded p-2 mt-1"
-                    rows={3}
-                  />
-                </div>
-                <Button onClick={createFlashcard} className="w-full">
-                  Create Card
-                </Button>
+                <div><label className="text-sm font-medium">Question</label><textarea value={newCard.question} onChange={e => setNewCard({ ...newCard, question: e.target.value })} className="w-full border rounded p-2 mt-1" rows={3} /></div>
+                <div><label className="text-sm font-medium">Answer</label><textarea value={newCard.answer} onChange={e => setNewCard({ ...newCard, answer: e.target.value })} className="w-full border rounded p-2 mt-1" rows={3} /></div>
+                <Button onClick={createFlashcard} className="w-full">Create Card</Button>
               </div>
             </DialogContent>
           </Dialog>
@@ -1022,57 +765,26 @@ if (xpError) {
 
         {/* Flashcards grid */}
         {flashcards.length === 0 ? (
-          <Card className="text-center py-12">
-            <CardContent>
-              <Brain className="w-12 h-12 mx-auto text-gray-300 mb-4" />
-              <h3 className="text-lg font-medium text-gray-600 mb-2">
-                No flashcards yet
-              </h3>
-              <p className="text-gray-500 mb-4">
-                Create your first flashcard or generate them from your notes using AI
-              </p>
-            </CardContent>
-          </Card>
+          <Card className="text-center py-12"><CardContent><Brain className="w-12 h-12 mx-auto text-gray-300 mb-4" /><h3 className="text-lg font-medium text-gray-600 mb-2">No flashcards yet</h3><p className="text-gray-500 mb-4">Create your first flashcard or generate them from your notes using AI</p></CardContent></Card>
         ) : (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {flashcards.map((card, index) => (
-              <motion.div
-                key={card.id}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: index * 0.1 }}
-              >
+            {sorted.map((card, index) => (
+              <motion.div key={card.id} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(index * 0.03, 0.3) }}>
                 <Card className="h-full hover:shadow-lg transition-shadow">
                   <CardContent className="p-4">
                     <div className="space-y-3">
                       <div>
+                        <p className="text-xs text-gray-400 mb-1">Due {new Date(card.next_review).toLocaleDateString()}</p>
                         <p className="text-sm font-medium text-gray-600 mb-1">Question</p>
-                        <p className="text-sm whitespace-pre-wrap line-clamp-3">
-                          {cleanText(card.question)}
-                        </p>
+                        <p className="text-sm whitespace-pre-wrap line-clamp-3">{cleanText(card.question)}</p>
                       </div>
                       <div>
                         <p className="text-sm font-medium text-gray-600 mb-1">Answer</p>
-                        <p className="text-sm text-gray-500 whitespace-pre-wrap line-clamp-2">
-                          {cleanText(card.answer)}
-                        </p>
+                        <p className="text-sm text-gray-500 whitespace-pre-wrap line-clamp-2">{cleanText(card.answer)}</p>
                       </div>
                       <div className="flex items-center justify-between pt-2 border-t">
-                        <div className="text-xs text-gray-400">
-                          {card.review_count > 0 && (
-                            <span>
-                              {card.correct_count}/{card.review_count} correct
-                            </span>
-                          )}
-                        </div>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => deleteFlashcard(card.id)}
-                          className="text-red-500 hover:text-red-700"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                        </Button>
+                        <div className="text-xs text-gray-400">{card.review_count > 0 && (<span>{card.correct_count}/{card.review_count} correct</span>)}</div>
+                        <Button size="sm" variant="outline" onClick={() => deleteFlashcard(card.id)} className="text-red-500 hover:text-red-700"><Trash2 className="w-3 h-3" /></Button>
                       </div>
                     </div>
                   </CardContent>
@@ -1081,11 +793,29 @@ if (xpError) {
             ))}
           </div>
         )}
+
+        {/* Insights modal */}
+        <Dialog open={showInsights} onOpenChange={setShowInsights}>
+          <DialogContent>
+            <DialogHeader><DialogTitle>AI Study Insights</DialogTitle></DialogHeader>
+            <div className="space-y-3 text-sm">
+              {insightsText ? (
+                <div className="whitespace-pre-wrap">{insightsText}</div>
+              ) : (
+                <p className="text-gray-500">No insights yet. Click <em>Analyze My Weak Spots</em> to generate.</p>
+              )}
+              <div className="text-xs text-gray-400">Tips: Focus on due cards first. Use keyboard: Space (reveal), 1 (incorrect), 2 (correct), ←/→ (navigate).</div>
+            </div>
+          </DialogContent>
+        </Dialog>
       </div>
     );
   }
 
-  // ─── FOLDERS GRID ──────────────────────────────────────────
+  // ===== Folders Grid =====
+  const subjects = ['Math AA','Math AI','English Lang & Lit','Economics','Business Management','Chemistry','Physics','Biology','Spanish Ab Initio','French Ab Initio'];
+  const colors = ['from-blue-500 to-purple-600','from-green-500 to-teal-600','from-purple-500 to-pink-600','from-orange-500 to-red-600','from-yellow-500 to-orange-600','from-indigo-500 to-blue-600','from-red-500 to-pink-600','from-cyan-500 to-blue-600'];
+
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-6">
       {/* Header */}
@@ -1095,67 +825,22 @@ if (xpError) {
           <p className="text-gray-600">Organize your study materials into folders</p>
         </div>
         <Dialog open={showCreateFolder} onOpenChange={setShowCreateFolder}>
-          <DialogTrigger asChild>
-            <Button>
-              <FolderPlus className="w-4 h-4 mr-2" />
-              New Folder
-            </Button>
-          </DialogTrigger>
+          <DialogTrigger asChild><Button><FolderPlus className="w-4 h-4 mr-2" /> New Folder</Button></DialogTrigger>
           <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Create New Folder</DialogTitle>
-            </DialogHeader>
+            <DialogHeader><DialogTitle>Create New Folder</DialogTitle></DialogHeader>
             <div className="space-y-4">
-              <div>
-                <label className="text-sm font-medium">Folder Name</label>
-                <input
-                  type="text"
-                  value={newFolder.name}
-                  onChange={e => setNewFolder({ ...newFolder, name: e.target.value })}
-                  className="w-full border rounded p-2 mt-1"
-                  placeholder="e.g., Chapter 5: Calculus"
-                />
-              </div>
-              <div>
-                <label className="text-sm font-medium">Subject</label>
-                <select
-                  value={newFolder.subject}
-                  onChange={e => setNewFolder({ ...newFolder, subject: e.target.value })}
-                  className="w-full border rounded p-2 mt-1"
-                >
-                  <option value="">Select a subject</option>
-                  {subjects.map(subject => (
-                    <option key={subject} value={subject}>{subject}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="text-sm font-medium">Description (Optional)</label>
-                <textarea
-                  value={newFolder.description}
-                  onChange={e => setNewFolder({ ...newFolder, description: e.target.value })}
-                  className="w-full border rounded p-2 mt-1"
-                  rows={2}
-                  placeholder="Brief description of what this folder contains..."
-                />
-              </div>
+              <div><label className="text-sm font-medium">Folder Name</label><input type="text" value={newFolder.name} onChange={e => setNewFolder({ ...newFolder, name: e.target.value })} className="w-full border rounded p-2 mt-1" placeholder="e.g., Chapter 5: Calculus" /></div>
+              <div><label className="text-sm font-medium">Subject</label><select value={newFolder.subject} onChange={e => setNewFolder({ ...newFolder, subject: e.target.value })} className="w-full border rounded p-2 mt-1"><option value="">Select a subject</option>{subjects.map(s => (<option key={s} value={s}>{s}</option>))}</select></div>
+              <div><label className="text-sm font-medium">Description (Optional)</label><textarea value={newFolder.description} onChange={e => setNewFolder({ ...newFolder, description: e.target.value })} className="w-full border rounded p-2 mt-1" rows={2} placeholder="Brief description of what this folder contains..." /></div>
               <div>
                 <label className="text-sm font-medium">Color Theme</label>
                 <div className="grid grid-cols-4 gap-2 mt-2">
                   {colors.map(color => (
-                    <button
-                      key={color}
-                      onClick={() => setNewFolder({ ...newFolder, color })}
-                      className={`h-10 rounded bg-gradient-to-r ${color} ${
-                        newFolder.color === color ? 'ring-2 ring-offset-2 ring-gray-400' : ''
-                      }`}
-                    />
+                    <button key={color} onClick={() => setNewFolder({ ...newFolder, color })} className={`h-10 rounded bg-gradient-to-r ${color} ${newFolder.color === color ? 'ring-2 ring-offset-2 ring-gray-400' : ''}`} />
                   ))}
                 </div>
               </div>
-              <Button onClick={createFolder} className="w-full">
-                Create Folder
-              </Button>
+              <Button onClick={createFolder} className="w-full">Create Folder</Button>
             </div>
           </DialogContent>
         </Dialog>
@@ -1163,34 +848,12 @@ if (xpError) {
 
       {/* Folders grid */}
       {folders.length === 0 ? (
-        <Card className="text-center py-12">
-          <CardContent>
-            <FolderPlus className="w-12 h-12 mx-auto text-gray-300 mb-4" />
-            <h3 className="text-lg font-medium text-gray-600 mb-2">
-              No folders yet
-            </h3>
-            <p className="text-gray-500 mb-4">
-              Create your first folder to start organizing your flashcards
-            </p>
-            <Button onClick={() => setShowCreateFolder(true)}>
-              <FolderPlus className="w-4 h-4 mr-2" />
-              Create First Folder
-            </Button>
-          </CardContent>
-        </Card>
+        <Card className="text-center py-12"><CardContent><FolderPlus className="w-12 h-12 mx-auto text-gray-300 mb-4" /><h3 className="text-lg font-medium text-gray-600 mb-2">No folders yet</h3><p className="text-gray-500 mb-4">Create your first folder to start organizing your flashcards</p><Button onClick={() => setShowCreateFolder(true)}><FolderPlus className="w-4 h-4 mr-2" /> Create First Folder</Button></CardContent></Card>
       ) : (
         <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
           {folders.map((folder, index) => (
-            <motion.div
-              key={folder.id}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: index * 0.1 }}
-            >
-              <Card
-                className="cursor-pointer hover:shadow-lg transition-all duration-300 overflow-hidden group"
-                onClick={() => setSelectedFolder(folder)}
-              >
+            <motion.div key={folder.id} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(index * 0.05, 0.3) }}>
+              <Card className="cursor-pointer hover:shadow-lg transition-all duration-300 overflow-hidden group" onClick={() => setSelectedFolder(folder)}>
                 <div className={`h-24 bg-gradient-to-r ${folder.color} relative`}>
                   <div className="absolute inset-0 bg-black bg-opacity-20 group-hover:bg-opacity-10 transition-all" />
                   <div className="absolute bottom-3 left-4 text-white">
@@ -1199,17 +862,10 @@ if (xpError) {
                   </div>
                 </div>
                 <CardContent className="p-4">
-                  <p className="text-gray-600 text-sm mb-3 line-clamp-2">
-                    {folder.description || 'No description provided'}
-                  </p>
+                  <p className="text-gray-600 text-sm mb-3 line-clamp-2">{folder.description || 'No description provided'}</p>
                   <div className="flex items-center justify-between text-xs text-gray-500">
-                    <span>
-                      Created {new Date(folder.created_at).toLocaleDateString()}
-                    </span>
-                    <div className="flex items-center">
-                      <Brain className="w-3 h-3 mr-1" />
-                      Study
-                    </div>
+                    <span>Created {new Date(folder.created_at).toLocaleDateString()}</span>
+                    <div className="flex items-center"><Brain className="w-3 h-3 mr-1" /> Study</div>
                   </div>
                 </CardContent>
               </Card>

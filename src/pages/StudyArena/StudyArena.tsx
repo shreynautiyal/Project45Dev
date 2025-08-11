@@ -31,7 +31,14 @@ import {
   TimerReset,
   Trophy,
   List,
+  Lock,
+  KeyRound,
+  Settings as SettingsIcon,
+  Check,
+  XCircle,
 } from 'lucide-react';
+// Ask-for-key modal state
+const [enterKeyFor, setEnterKeyFor] = useState<Room | null>(null);
 
 /* ----------------------------- Types ----------------------------- */
 
@@ -42,6 +49,9 @@ type Room = {
   difficulty: 'Easy' | 'Medium' | 'Hard';
   host_id: string;
   created_at: string;
+  approval_required?: boolean | null; // NEW
+  requires_key?: boolean | null; // NEW
+  join_key_hash?: string | null; // optional hashed server-side
 };
 
 type Profile = {
@@ -56,10 +66,10 @@ type Message = {
   user_id: string;
   content: string;
   created_at: string;
-  profiles: {
+  profiles?: {
     username: string;
     profile_picture: string | null;
-  };
+  } | null; // make optional to avoid crashes on realtime INSERT
   __optimistic?: boolean;
 };
 
@@ -88,12 +98,24 @@ type LeaderRow = {
   seconds: number;
 };
 
+// Join requests (NEW)
+// Expect a table study_room_join_requests (id, room_id, requester_id, status: 'pending'|'accepted'|'denied', created_at)
+// and a row-level security policy to allow host to manage
+export type JoinRequest = {
+  id: string;
+  room_id: string;
+  requester_id: string;
+  status: 'pending'|'accepted'|'denied';
+  created_at: string;
+  requester?: Pick<Profile, 'username'|'profile_picture'>;
+};
+
 /* -------------------------- Small helpers ------------------------ */
 
 const DIFF_COLORS: Record<Room['difficulty'], string> = {
-  Easy: 'bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200',
-  Medium: 'bg-amber-100 text-amber-800 ring-1 ring-amber-200',
-  Hard: 'bg-rose-100 text-rose-700 ring-1 ring-rose-200',
+  Easy: 'bg-neutral-900 text-white',
+  Medium: 'bg-neutral-900 text-white',
+  Hard: 'bg-neutral-900 text-white',
 };
 
 function cx(...classes: (string | false | null | undefined)[]) {
@@ -145,7 +167,12 @@ export default function StudyArena() {
   const [roomName, setRoomName] = useState('');
   const [subject, setSubject] = useState('');
   const [difficulty, setDifficulty] = useState<Room['difficulty']>('Easy');
+  const [approvalRequired, setApprovalRequired] = useState(false); // NEW
+  const [requiresKey, setRequiresKey] = useState(false); // NEW
+  const [plainKey, setPlainKey] = useState(''); // sent to server for hashing or stored as-is if you choose
   const [showCreate, setShowCreate] = useState(false);
+
+  const [showSettings, setShowSettings] = useState(false); // NEW room settings
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
@@ -164,8 +191,10 @@ export default function StudyArena() {
   const [diffFilter, setDiffFilter] = useState<'All' | Room['difficulty']>('All');
   const [subjectFilter, setSubjectFilter] = useState('');
 
+  const [joinKeyInput, setJoinKeyInput] = useState(''); // NEW join key input
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const typingIntervalRef = useRef<NodeJS.Timer | null>(null);
+  const typingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Activity + session state
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -190,12 +219,18 @@ export default function StudyArena() {
     config: defaultPomodoro,
   });
 
-  // Leaderboards
+  // Leaderboards (DAILY ONLY now)
   const [top5Today, setTop5Today] = useState<LeaderRow[]>([]);
-  const [top5All, setTop5All] = useState<LeaderRow[]>([]);
   const [showBoards, setShowBoards] = useState(false);
 
-  /* -------------------- Rooms list load + subscribe -------------------- */
+  // Join requests UI state (NEW)
+  const [joinRequests, setJoinRequests] = useState<JoinRequest[]>([]);
+  const [showJoinRequests, setShowJoinRequests] = useState(false);
+
+  // Simple profiles cache to prevent message crash (NEW)
+  const profilesCache = useRef<Record<string, { username: string; profile_picture: string | null }>>({});
+
+  /* ---------------------- Rooms list load + subscribe -------------------- */
   useEffect(() => {
     if (!user) return;
 
@@ -221,6 +256,9 @@ export default function StudyArena() {
           return next.sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at));
         });
       })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'study_rooms' }, (payload) => {
+        setRooms((prev) => prev.map(r => r.id === payload.new.id ? (payload.new as Room) : r));
+      })
       .subscribe();
 
     setRoomsChannel(channel);
@@ -232,12 +270,52 @@ export default function StudyArena() {
   /* ------------------------- Join room routine ------------------------- */
   const joinRoom = async (room: Room) => {
     if (!user) return;
+
+    // If room requires approval, send request and exit until accepted
+    if (room.approval_required && room.host_id !== user.id) {
+      const { data: existing } = await supabase
+        .from('study_room_join_requests')
+        .select('id,status')
+        .eq('room_id', room.id)
+        .eq('requester_id', user.id)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (!existing) {
+        const { error: reqErr } = await supabase.from('study_room_join_requests').insert({
+          room_id: room.id,
+          requester_id: user.id,
+          status: 'pending',
+        });
+        if (reqErr) return toast.error('Could not send join request.');
+        toast.success('Join request sent to host.');
+      } else if (existing.status === 'pending') {
+        toast('Request pending approval.');
+      } else if (existing.status === 'denied') {
+        toast.error('Your previous request was denied.');
+      } else {
+        // accepted fall-through
+      }
+      // If not accepted yet, do not proceed
+      if (!existing || existing.status !== 'accepted') return;
+    }
+
+    // If room requires key, prompt if not provided
+    if (room.requires_key && room.host_id !== user.id) {
+  if (!joinKeyInput.trim()) {
+    setSelectedRoom(null);
+    setEnterKeyFor(room); // open modal
+    return;
+  }
+  const { data: ok } = await supabase.rpc('verify_room_key', { p_room: room.id, p_key: joinKeyInput.trim() });
+  if (!ok) return toast.error('Invalid key.');
+}
+
     setSelectedRoom(room);
     setMessages([]);
     setOnlineUsers({});
     setTypingMap({});
     setTop5Today([]);
-    setTop5All([]);
 
     // Clean channels
     for (const ch of [msgsChannel, presenceChannel, typingChannel, pomodoroChannel]) {
@@ -248,21 +326,51 @@ export default function StudyArena() {
     // Upsert membership
     await supabase.from('study_room_members').upsert({ room_id: room.id, user_id: user.id });
 
-    // Load messages
+    // Load messages (include profiles)
     const { data, error } = await supabase
       .from('study_room_messages')
       .select('*, profiles(username, profile_picture)')
       .eq('room_id', room.id)
       .order('created_at', { ascending: true });
     if (error) toast.error('Could not load messages.');
-    else setMessages((data || []) as Message[]);
+    else {
+      // Fill cache
+      (data || []).forEach((m: any) => {
+        if (m.user_id && m.profiles) {
+          profilesCache.current[m.user_id] = {
+            username: m.profiles.username,
+            profile_picture: m.profiles.profile_picture,
+          };
+        }
+      });
+      setMessages((data || []) as Message[]);
+    }
 
-    // Subscribe to new messages
+    // Subscribe to new messages (GUARDED to avoid blank page)
     const mChannel = supabase
       .channel(`room:${room.id}:messages`)
       .on('postgres_changes', {
         event: 'INSERT', schema: 'public', table: 'study_room_messages', filter: `room_id=eq.${room.id}`,
-      }, (payload) => setMessages((m) => [...m, payload.new as Message]))
+      }, async (payload) => {
+        const raw = payload.new as Message;
+        let withProfile = raw;
+        if (!raw.profiles) {
+          const cached = profilesCache.current[raw.user_id];
+          if (cached) {
+            withProfile = { ...raw, profiles: cached };
+          } else {
+            // fetch once (avoid crash)
+            const { data: p } = await supabase
+              .from('profiles')
+              .select('username, profile_picture')
+              .eq('id', raw.user_id)
+              .maybeSingle();
+            withProfile = { ...raw, profiles: p ?? { username: 'User', profile_picture: null } };
+            if (p) profilesCache.current[raw.user_id] = p as any;
+          }
+        }
+        setMessages((m) => [...m, withProfile]);
+      })
       .subscribe();
     setMsgsChannel(mChannel);
 
@@ -301,6 +409,7 @@ export default function StudyArena() {
             profile_picture: prof?.profile_picture ?? null,
             last_active: Date.now(),
           } as PresenceUser);
+          if (prof) profilesCache.current[user.id] = { username: prof.username, profile_picture: prof.profile_picture };
         }
       });
     setPresenceChannel(pChannel);
@@ -332,9 +441,23 @@ export default function StudyArena() {
       updated_by: rp.updated_by,
       updated_at: rp.updated_at,
     });
+
+    // Load pending join requests if I'm the host (NEW)
+    if (room.host_id === user.id) {
+      const { data: reqs } = await supabase
+        .from('study_room_join_requests')
+        .select('*, requester:profiles!study_room_join_requests_requester_id_fkey(username,profile_picture)')
+        .eq('room_id', room.id)
+        .eq('status', 'pending')
+        .order('created_at', { ascending: true });
+      setJoinRequests((reqs || []).map((r: any) => ({ ...r, requester: r.requester })));
+    } else {
+      setJoinRequests([]);
+    }
+
     // Start session
     await startSession(room.id);
-    // Load leaderboards
+    // Load leaderboard
     await refreshLeaderboards(room.id);
   };
 
@@ -397,11 +520,12 @@ export default function StudyArena() {
     if (error) console.error(error);
   }
 
-  // Heartbeat every 20s AND local 1s tick
+  // Heartbeat every 20s AND local 1s tick. Also refresh daily leaderboard.
   useEffect(() => {
-    if (!sessionId || !presenceChannel) return;
-    let hbTimer: NodeJS.Timer | null = null;
-    let tickTimer: NodeJS.Timer | null = null;
+    if (!sessionId || !presenceChannel || !selectedRoom) return;
+    let hbTimer: ReturnType<typeof setInterval> | null = null;
+    let tickTimer: ReturnType<typeof setInterval> | null = null;
+    let lbTimer: ReturnType<typeof setInterval> | null = null;
 
     const sendHeartbeat = async () => {
       // Presence
@@ -422,15 +546,19 @@ export default function StudyArena() {
       if (active) setSessionActiveSeconds((s) => s + 1);
     };
 
+    const refreshLB = () => refreshLeaderboards(selectedRoom.id);
+
     hbTimer = setInterval(sendHeartbeat, 20_000);
     tickTimer = setInterval(tick, 1000);
+    lbTimer = setInterval(refreshLB, 10_000); // DAILY only view, refresh often
 
     return () => {
       if (hbTimer) clearInterval(hbTimer);
       if (tickTimer) clearInterval(tickTimer);
+      if (lbTimer) clearInterval(lbTimer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, presenceChannel, lastInputAt, hiddenSince]);
+  }, [sessionId, presenceChannel, lastInputAt, hiddenSince, selectedRoom?.id]);
 
   // Global activity listeners
   useEffect(() => {
@@ -487,7 +615,7 @@ export default function StudyArena() {
       user_id: user.id,
       content,
       created_at: new Date().toISOString(),
-      profiles: { username: 'You', profile_picture: null },
+      profiles: { username: 'You', profile_picture: profilesCache.current[user.id]?.profile_picture ?? null },
       __optimistic: true,
     };
     setMessages((m) => [...m, optimistic]);
@@ -516,24 +644,13 @@ export default function StudyArena() {
     return onlineList.filter(u => now - u.last_active <= 60_000).length;
   }, [onlineList]);
 
-  // Room "focus total" = sum of visible active timers
-  const roomFocusSeconds = useMemo(() => {
-    // We can't know precise seconds for others; show "soft" total: count * (approx)
-    // Here we just multiply active users by 0 (we avoid misleading sum) and show count.
-    // If you want a true rolling sum, you could track client start times via presence.
-    return sessionActiveSeconds; // use your own contribution + badge per user
-  }, [sessionActiveSeconds]);
+  // Room "focus total" = your own contribution only (avoid misleading sum)
+  const roomFocusSeconds = useMemo(() => sessionActiveSeconds, [sessionActiveSeconds]);
 
   /* --------------------------- Leaderboards --------------------------- */
 
   async function refreshLeaderboards(roomId: string) {
-    // Today (room) using study_sessions (intersection with today) or stats.today_seconds
-    // We’ll read from user_room_stats for performance.
-
-    const { data: todayRows } = await supabase
-      .rpc('exec_sql', {  /* fallback if you don’t have postgres rpc extension, comment this and use select below */ });
-
-    // Fallback: select with joins
+    // DAILY ONLY
     const { data: today, error: e1 } = await supabase
       .from('user_room_stats')
       .select('user_id, today_seconds, profiles:profiles(username, profile_picture)')
@@ -548,28 +665,7 @@ export default function StudyArena() {
         profile_picture: r.profiles?.profile_picture || null,
       })));
     }
-
-    const { data: all, error: e2 } = await supabase
-      .from('user_room_stats')
-      .select('user_id, total_seconds, profiles:profiles(username, profile_picture)')
-      .eq('room_id', roomId)
-      .order('total_seconds', { ascending: false })
-      .limit(5);
-    if (!e2 && all) {
-      setTop5All(all.map((r: any) => ({
-        user_id: r.user_id,
-        seconds: r.total_seconds,
-        username: r.profiles?.username || 'User',
-        profile_picture: r.profiles?.profile_picture || null,
-      })));
-    }
   }
-
-  useEffect(() => {
-    if (!selectedRoom) return;
-    const t = setInterval(() => refreshLeaderboards(selectedRoom.id), 20_000);
-    return () => clearInterval(t);
-  }, [selectedRoom]);
 
   /* --------------------------- Pomodoro logic -------------------------- */
 
@@ -659,25 +755,74 @@ export default function StudyArena() {
   /* ------------------------------ Render ------------------------------ */
 
   return (
-    <div className="relative min-h-[calc(100vh-4rem)]">
-      <div className="absolute inset-x-0 top-0 h-64 bg-gradient-to-br from-indigo-600 via-fuchsia-600 to-orange-500 opacity-20 blur-2xl pointer-events-none" />
+    <div className="relative min-h-[calc(100vh-4rem)] bg-white">{/* White background */}
+      {/* Removed gradient header; keep things clean */}
+      {/* Sticky floating timers bar (always visible) */}
+      {selectedRoom && (
+        <div className="sticky top-0 z-40 bg-white/95 backdrop-blur border-b">
+          <div className="max-w-7xl mx-auto px-4 py-2 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <span className="text-xs font-semibold text-neutral-700">Solo</span>
+              <span className={cx('text-[11px] px-2 py-0.5 rounded-full border bg-neutral-900 text-white')}>
+                {soloMode === 'idle' ? 'Idle' : soloMode === 'focus' ? 'Focus' : 'Break'} • {formatDuration(remainingSolo)}
+              </span>
+              {soloMode !== 'focus' && (
+                <Button size="sm" variant="secondary" onClick={() => {
+                  setSoloMode('focus');
+                  setSoloEndsAt(new Date(Date.now() + defaultPomodoro.focus * 1000).toISOString());
+                  setSoloCycle((c) => (c % defaultPomodoro.long_every) + 1);
+                }}>
+                  <Play className="h-4 w-4 mr-1" /> Focus
+                </Button>
+              )}
+              {soloMode !== 'idle' && (
+                <Button size="sm" variant="secondary" onClick={() => { setSoloMode('idle'); setSoloEndsAt(null); }}>
+                  <Pause className="h-4 w-4 mr-1" /> Stop
+                </Button>
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="text-xs font-semibold text-neutral-700">Shared</span>
+              <span className={cx('text-[11px] px-2 py-0.5 rounded-full border bg-neutral-900 text-white')}>
+                {shared.mode === 'idle' ? 'Idle' : shared.mode === 'focus' ? 'Focus' : 'Break'} • {formatDuration(remainingShared)}
+              </span>
+              {isHost ? (
+                <>
+                  <Button size="sm" variant="secondary" onClick={startSharedFocus}><Play className="h-4 w-4 mr-1" /> Focus</Button>
+                  <Button size="sm" variant="secondary" onClick={startSharedBreak}><Coffee className="h-4 w-4 mr-1" /> Break</Button>
+                  <Button size="sm" variant="secondary" onClick={stopShared}><TimerReset className="h-4 w-4 mr-1" /> End</Button>
+                </>
+              ) : (
+                <span className="text-[11px] text-neutral-500">host controls</span>
+              )}
+            </div>
+            <div className="text-xs text-neutral-700">
+              <span className="font-medium">Room Focus:</span> {formatDuration(roomFocusSeconds)} total
+              <span className="ml-2 text-neutral-500">({activeNowCount} active now)</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="relative p-6 max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Sidebar */}
         <div className="lg:col-span-1 space-y-4">
-          <Card className="border-0 shadow-lg ring-1 ring-black/5">
+          <Card className="border-0 shadow-sm ring-1 ring-black/10 bg-white">
             <CardHeader className="flex flex-row justify-between items-center">
-              <CardTitle className="flex items-center gap-2">
+              <CardTitle className="flex items-center gap-2 text-neutral-900">
                 <Sparkles className="h-5 w-5" />
                 Study Arena
               </CardTitle>
-              <Button variant="primary" onClick={() => setShowCreate(true)}>
-                <Plus className="h-4 w-4 mr-1" />
-                Create
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button variant="secondary" onClick={() => setShowCreate(true)}>
+                  <Plus className="h-4 w-4 mr-1" />
+                  Create
+                </Button>
+              </div>
             </CardHeader>
             <CardContent className="space-y-3">
               <div className="relative">
-                <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
                 <Input className="pl-9" placeholder="Search rooms or subjects..." value={q} onChange={(e) => setQ(e.target.value)} />
               </div>
               <div className="grid grid-cols-3 gap-2">
@@ -694,38 +839,51 @@ export default function StudyArena() {
             </CardContent>
           </Card>
 
-          <Card className="border-0 shadow-lg ring-1 ring-black/5">
+          <Card className="border-0 shadow-sm ring-1 ring-black/10 bg-white">
             <CardHeader className="flex items-center justify-between">
-              <CardTitle className="flex items-center gap-2">
+              <CardTitle className="flex items-center gap-2 text-neutral-900">
                 <Hash className="h-5 w-5" />
                 Available Rooms
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-2 max-h-[28rem] overflow-y-auto pr-1">
               {loadingRooms ? (
-                <div className="flex items-center justify-center py-10 text-gray-500">
+                <div className="flex items-center justify-center py-10 text-neutral-500">
                   <Loader2 className="h-5 w-5 animate-spin mr-2" />
                   Loading rooms…
                 </div>
               ) : filteredRooms.length === 0 ? (
-                <div className="text-gray-500 text-sm py-8 text-center">No rooms match your filters.</div>
+                <div className="text-neutral-500 text-sm py-8 text-center">No rooms match your filters.</div>
               ) : (
                 filteredRooms.map((r) => (
                   <motion.button
                     key={r.id}
                     whileHover={{ scale: 1.01 }}
                     whileTap={{ scale: 0.99 }}
-                    className={cx('w-full text-left p-3 rounded-lg border bg-white hover:bg-gray-50 transition',
-                      selectedRoom?.id === r.id && 'border-indigo-300 ring-2 ring-indigo-200')}
+                    className={cx('w-full text-left p-3 rounded-lg border bg-white hover:bg-neutral-50 transition',
+                      selectedRoom?.id === r.id && 'border-neutral-900 ring-2 ring-neutral-200')}
                     onClick={() => joinRoom(r)}
                   >
                     <div className="flex items-center justify-between">
-                      <p className="font-medium">{r.name}</p>
+                      <p className="font-medium text-neutral-900 flex items-center gap-2">
+                        {r.name}
+                        {r.approval_required && (
+                      <span title="Approval required">
+                        <Shield className="h-4 w-4 text-neutral-600" />
+                      </span>
+                    )}
+                    {r.requires_key && (
+                      <span title="Key required">
+                        <KeyRound className="h-4 w-4 text-neutral-600" />
+                      </span>
+                    )}
+
+                      </p>
                       <span className={cx('text-[10px] px-2 py-0.5 rounded-full', DIFF_COLORS[r.difficulty])}>
                         {r.difficulty}
                       </span>
                     </div>
-                    <div className="mt-1 flex items-center gap-2 text-xs text-gray-500">
+                    <div className="mt-1 flex items-center gap-2 text-xs text-neutral-600">
                       <span className="inline-flex items-center gap-1">
                         <MessageSquare className="h-3.5 w-3.5" />
                         {r.subject}
@@ -735,7 +893,7 @@ export default function StudyArena() {
                         {timeSince(r.created_at)} ago
                       </span>
                       {r.host_id === user.id && (
-                        <span className="inline-flex items-center gap-1 text-indigo-600">
+                        <span className="inline-flex items-center gap-1 text-neutral-900">
                           <Shield className="h-3.5 w-3.5" />
                           Host
                         </span>
@@ -747,52 +905,78 @@ export default function StudyArena() {
             </CardContent>
           </Card>
 
-          {/* Leaderboards (Top 5) */}
+          {/* Leaderboard (DAILY ONLY) */}
           {selectedRoom && (
-            <Card className="border-0 shadow-lg ring-1 ring-black/5">
+            <Card className="border-0 shadow-sm ring-1 ring-black/10 bg-white">
               <CardHeader className="flex items-center justify-between">
-                <CardTitle className="flex items-center gap-2">
+                <CardTitle className="flex items-center gap-2 text-neutral-900">
                   <Trophy className="h-5 w-5" />
-                  Leaderboards
+                  Daily Leaderboard
                 </CardTitle>
                 <Button size="sm" variant="secondary" onClick={() => setShowBoards(true)}>
-                  <List className="h-4 w-4 mr-1" /> View full
+                  <List className="h-4 w-4 mr-1" /> View all
                 </Button>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div>
-                  <div className="text-xs font-semibold text-gray-600 mb-2">Today</div>
-                  <div className="space-y-2">
-                    {top5Today.length === 0 && <div className="text-xs text-gray-500">No data yet.</div>}
-                    {top5Today.map((r, i) => (
-                      <div key={r.user_id} className="flex items-center justify-between text-sm">
-                        <div className="flex items-center gap-2">
-                          <span className="w-5 text-gray-400">{i + 1}.</span>
-                          <img src={r.profile_picture || ''} className="h-6 w-6 rounded-full bg-gray-200" />
-                          <span className="truncate max-w-[9rem]">{r.username}</span>
-                        </div>
-                        <span className="tabular-nums text-gray-700">{formatDuration(r.seconds)}</span>
+                <div className="space-y-2">
+                  {top5Today.length === 0 && <div className="text-xs text-neutral-500">No data yet.</div>}
+                  {top5Today.map((r, i) => (
+                    <div key={r.user_id} className="flex items-center justify-between text-sm">
+                      <div className="flex items-center gap-2">
+                        <span className="w-5 text-neutral-400">{i + 1}.</span>
+                        <img src={r.profile_picture || ''} className="h-6 w-6 rounded-full bg-neutral-200" />
+                        <span className="truncate max-w-[9rem]">{r.username}</span>
                       </div>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-xs font-semibold text-gray-600 mb-2">All-time</div>
-                  <div className="space-y-2">
-                    {top5All.length === 0 && <div className="text-xs text-gray-500">No data yet.</div>}
-                    {top5All.map((r, i) => (
-                      <div key={r.user_id} className="flex items-center justify-between text-sm">
-                        <div className="flex items-center gap-2">
-                          <span className="w-5 text-gray-400">{i + 1}.</span>
-                          <img src={r.profile_picture || ''} className="h-6 w-6 rounded-full bg-gray-200" />
-                          <span className="truncate max-w-[9rem]">{r.username}</span>
-                        </div>
-                        <span className="tabular-nums text-gray-700">{formatDuration(r.seconds)}</span>
-                      </div>
-                    ))}
-                  </div>
+                      <span className="tabular-nums text-neutral-800">{formatDuration(r.seconds)}</span>
+                    </div>
+                  ))}
                 </div>
               </CardContent>
+            </Card>
+          )}
+
+          {/* Host: pending join requests (NEW) */}
+          {selectedRoom && isHost && (
+            <Card className="border-0 shadow-sm ring-1 ring-black/10 bg-white">
+              <CardHeader className="flex items-center justify-between">
+                <CardTitle className="flex items-center gap-2 text-neutral-900">
+                  <Shield className="h-5 w-5" /> Join Requests
+                </CardTitle>
+                <Button size="sm" variant="secondary" onClick={() => setShowJoinRequests((s)=>!s)}>
+                  {showJoinRequests ? 'Hide' : 'Show'}
+                </Button>
+              </CardHeader>
+              {showJoinRequests && (
+                <CardContent className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                  {joinRequests.length === 0 ? (
+                    <div className="text-xs text-neutral-500">No pending requests.</div>
+                  ) : joinRequests.map((jr) => (
+                    <div key={jr.id} className="flex items-center justify-between text-sm">
+                      <div className="flex items-center gap-2">
+                        <img src={jr.requester?.profile_picture || ''} className="h-6 w-6 rounded-full bg-neutral-200" />
+                        <span>{jr.requester?.username ?? 'User'}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button size="sm" onClick={async ()=>{
+                          await supabase.from('study_room_join_requests').update({ status: 'accepted' }).eq('id', jr.id);
+                          toast.success('Accepted');
+                          setJoinRequests((arr)=>arr.filter(r=>r.id!==jr.id));
+                          // Optional: notify user via channel
+                        }}>
+                          <Check className="h-4 w-4" />
+                        </Button>
+                        <Button size="sm" variant="secondary" onClick={async ()=>{
+                          await supabase.from('study_room_join_requests').update({ status: 'denied' }).eq('id', jr.id);
+                          toast('Denied');
+                          setJoinRequests((arr)=>arr.filter(r=>r.id!==jr.id));
+                        }}>
+                          <XCircle className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </CardContent>
+              )}
             </Card>
           )}
         </div>
@@ -800,19 +984,19 @@ export default function StudyArena() {
         {/* Chat Panel */}
         <div className="lg:col-span-2 flex flex-col">
           {!selectedRoom ? (
-            <Card className="border-0 shadow-xl ring-1 ring-black/5 h-[80vh] flex items-center justify-center">
+            <Card className="border-0 shadow-sm ring-1 ring-black/10 h-[80vh] flex items-center justify-center bg-white">
               <div className="text-center max-w-md">
-                <div className="mx-auto mb-4 h-14 w-14 rounded-2xl bg-indigo-600/10 flex items-center justify-center">
-                  <Sparkles className="h-7 w-7 text-indigo-600" />
+                <div className="mx-auto mb-4 h-14 w-14 rounded-2xl bg-neutral-900 flex items-center justify-center">
+                  <Sparkles className="h-7 w-7 text-white" />
                 </div>
-                <h2 className="text-xl font-semibold">Welcome to Study Arena</h2>
-                <p className="text-gray-500 mt-1">Create a room or join one from the list to start collaborating in real time.</p>
+                <h2 className="text-xl font-semibold text-neutral-900">Welcome to Study Arena</h2>
+                <p className="text-neutral-600 mt-1">Create a room or join one from the list to start collaborating in real time.</p>
               </div>
             </Card>
           ) : (
-            <Card className="border-0 shadow-xl ring-1 ring-black/5 h-[80vh] flex flex-col overflow-hidden">
+            <Card className="border-0 shadow-sm ring-1 ring-black/10 h-[80vh] flex flex-col overflow-hidden bg-white">
               {/* Header */}
-              <div className="px-4 py-3 border-b bg-white/70 backdrop-blur flex items-center justify-between">
+              <div className="px-4 py-3 border-b bg-white flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <Button variant="secondary" onClick={leaveRoom} className="hidden sm:inline-flex">
                     <ChevronLeft className="h-4 w-4 mr-1" />
@@ -820,36 +1004,37 @@ export default function StudyArena() {
                   </Button>
                   <div>
                     <div className="flex items-center gap-2">
-                      <CardTitle>{selectedRoom.name}</CardTitle>
+                      <CardTitle className="text-neutral-900">{selectedRoom.name}</CardTitle>
                       <span className={cx('text-[10px] px-2 py-0.5 rounded-full', DIFF_COLORS[selectedRoom.difficulty])}>
                         {selectedRoom.difficulty}
                       </span>
+                      {isHost && (
+                        <Button size="sm" variant="secondary" onClick={()=>setShowSettings(true)} className="ml-2">
+                          <SettingsIcon className="h-4 w-4 mr-1" /> Settings
+                        </Button>
+                      )}
                     </div>
-                    <div className="text-xs text-gray-500">{selectedRoom.subject}</div>
+                    <div className="text-xs text-neutral-600">{selectedRoom.subject}</div>
                   </div>
                 </div>
 
-                {/* Presence + Focus total */}
+                {/* Presence */}
                 <div className="flex items-center gap-4">
                   <div className="hidden md:flex items-center gap-2">
-                    <Users className="h-4 w-4 text-gray-400" />
+                    <Users className="h-4 w-4 text-neutral-400" />
                     <div className="flex -space-x-2">
                       {onlineList.slice(0, 5).map((u) => (
                         <img key={u.user_id} src={u.profile_picture || ''} alt={u.username}
-                          className="h-6 w-6 rounded-full object-cover bg-gray-200 ring-2 ring-white" title={u.username} />
+                          className="h-6 w-6 rounded-full object-cover bg-neutral-200 ring-2 ring-white" title={u.username} />
                       ))}
                     </div>
-                    <span className="text-xs text-gray-600 ml-1">{onlineList.length} online</span>
-                  </div>
-                  <div className="text-xs text-gray-700" aria-live="polite">
-                    <span className="font-medium">Room Focus:</span> {formatDuration(roomFocusSeconds)} total
-                    <span className="ml-2 text-gray-500">({activeNowCount} active now)</span>
+                    <span className="text-xs text-neutral-600 ml-1">{onlineList.length} online</span>
                   </div>
                 </div>
               </div>
 
               {/* Messages */}
-              <div className="flex-1 overflow-y-auto p-4 bg-gradient-to-b from-white to-gray-50">
+              <div className="flex-1 overflow-y-auto p-4">
                 <div className="space-y-4">
                   {/* Online badges */}
                   <div className="flex flex-wrap gap-3 mb-2">
@@ -857,10 +1042,10 @@ export default function StudyArena() {
                       const active = Date.now() - u.last_active <= 60_000;
                       return (
                         <div key={u.user_id} className="flex items-center gap-2 px-2 py-1 rounded-full border bg-white">
-                          <img src={u.profile_picture || ''} className="h-5 w-5 rounded-full bg-gray-200" />
-                          <span className="text-xs">{u.username}</span>
+                          <img src={u.profile_picture || ''} className="h-5 w-5 rounded-full bg-neutral-200" />
+                          <span className="text-xs text-neutral-800">{u.username}</span>
                           <span className={cx('text-[10px] px-2 py-0.5 rounded-full',
-                            active ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-600')}>
+                            active ? 'bg-neutral-900 text-white' : 'bg-neutral-100 text-neutral-600')}>
                             {active ? `Studying ${u.user_id === user.id ? formatDuration(sessionActiveSeconds) : 'now'}` : 'Idle'}
                           </span>
                         </div>
@@ -871,21 +1056,33 @@ export default function StudyArena() {
                   <AnimatePresence initial={false}>
                     {messages.map((msg) => {
                       const mine = msg.user_id === user.id;
+                      const username = mine ? 'You' : (msg.profiles?.username ?? 'User');
+                      const avatar = msg.profiles?.profile_picture || '';
                       return (
                         <motion.div
                           key={msg.id}
                           initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}
                           className={cx('flex items-start gap-2', mine && 'flex-row-reverse')}
                         >
-                          <img src={msg.profiles.profile_picture || ''} alt="" className="h-8 w-8 rounded-full object-cover bg-gray-200" />
+                          <img src={avatar} alt="" className="h-8 w-8 rounded-full object-cover bg-neutral-200" />
                           <div className={cx('max-w-[80%]')}>
                             <div className={cx('text-[11px] mb-0.5', mine ? 'text-right' : 'text-left')}>
-                              <span className="font-semibold">{mine ? 'You' : msg.profiles.username}</span>
-                              <span className="text-gray-400 ml-2">{timeSince(msg.created_at)} ago</span>
-                              {msg.__optimistic && <span className="ml-2 text-indigo-500">sending…</span>}
+                              <span className="font-semibold text-neutral-900">{username}</span>
+                              <span className="text-neutral-400 ml-2">{timeSince(msg.created_at)} ago</span>
+                                                            {msg.__optimistic && (
+                                <span className="ml-2 text-neutral-400 italic">
+                                  (sending…)
+                                </span>
+                              )}
                             </div>
-                            <div className={cx('px-3 py-2 rounded-2xl border',
-                              mine ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-900 border-gray-200')}>
+                            <div
+                              className={cx(
+                                'px-3 py-2 rounded-lg text-sm whitespace-pre-wrap break-words',
+                                mine
+                                  ? 'bg-neutral-900 text-white'
+                                  : 'bg-neutral-100 text-neutral-900'
+                              )}
+                            >
                               {msg.content}
                             </div>
                           </div>
@@ -893,363 +1090,47 @@ export default function StudyArena() {
                       );
                     })}
                   </AnimatePresence>
-
-                  {/* Typing indicator */}
-                  {Object.keys(typingMap).length > 0 && (
-                    <div className="flex items-center gap-2 text-xs text-gray-500 pl-10">
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      {Object.keys(typingMap).length === 1 ? 'Someone is typing…' : 'Multiple people are typing…'}
-                    </div>
-                  )}
-
                   <div ref={messagesEndRef} />
                 </div>
               </div>
 
-              {/* Composer + Pomodoro */}
-              <div className="p-3 border-t bg-white/70 backdrop-blur space-y-3">
-                {/* Pomodoro row */}
-                <div className="flex flex-wrap items-center gap-2 justify-between">
-                  {/* Solo controls */}
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-semibold text-gray-600">Solo</span>
-                    {soloMode !== 'focus' && (
-                      <Button size="sm" variant="secondary" onClick={() => {
-                        setSoloMode('focus');
-                        setSoloEndsAt(new Date(Date.now() + defaultPomodoro.focus * 1000).toISOString());
-                        setSoloCycle((c) => (c % defaultPomodoro.long_every) + 1);
-                      }}>
-                        <Play className="h-4 w-4 mr-1" /> Focus
-                      </Button>
-                    )}
-                    {soloMode !== 'idle' && (
-                      <Button size="sm" variant="secondary" onClick={() => { setSoloMode('idle'); setSoloEndsAt(null); }}>
-                        <Pause className="h-4 w-4 mr-1" /> Stop
-                      </Button>
-                    )}
-                    {soloMode !== 'idle' && (
-                      <span className={cx('text-[11px] px-2 py-0.5 rounded-full border',
-                        soloMode === 'focus' ? 'bg-emerald-100 text-emerald-700 border-emerald-200' : 'bg-amber-100 text-amber-800 border-amber-200')}
-                        aria-live="polite">
-                        {soloMode === 'focus' ? 'Focus' : 'Break'} • {formatDuration(remainingSolo)}
-                      </span>
-                    )}
-                  </div>
+              {/* Typing indicator */}
+              <div className="px-4 pb-2 text-xs text-neutral-500 h-4">
+                {Object.keys(typingMap).length > 0 &&
+                  `${Object.keys(typingMap).length} user${
+                    Object.keys(typingMap).length > 1 ? 's' : ''
+                  } typing...`}
+              </div>
 
-                  {/* Shared controls */}
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-semibold text-gray-600">Shared</span>
-                    {isHost ? (
-                      <>
-                        <Button size="sm" variant="secondary" onClick={startSharedFocus}><Play className="h-4 w-4 mr-1" /> Focus</Button>
-                        <Button size="sm" variant="secondary" onClick={startSharedBreak}><Coffee className="h-4 w-4 mr-1" /> Break</Button>
-                        <Button size="sm" variant="secondary" onClick={stopShared}><TimerReset className="h-4 w-4 mr-1" /> End</Button>
-                      </>
-                    ) : (
-                      <span className="text-[11px] text-gray-500">host controls</span>
-                    )}
-                    <span className={cx('text-[11px] px-2 py-0.5 rounded-full border',
-                      shared.mode === 'focus' ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
-                        : shared.mode === 'break' ? 'bg-amber-100 text-amber-800 border-amber-200'
-                        : 'bg-gray-100 text-gray-600 border-gray-200')}
-                      aria-live="polite">
-                      {shared.mode === 'idle' ? 'Idle' : shared.mode === 'focus' ? 'Focus' : 'Break'} • {formatDuration(remainingShared)}
-                    </span>
-                    <span className="text-[10px] text-gray-500">Cycle {shared.cycle_idx || 0}</span>
-                  </div>
-                </div>
-
-                {/* Message input */}
-                <div className="flex items-center gap-2">
-                  <Input
-                    placeholder="Type a message…"
-                    value={newMessage}
-                    onChange={(e) => setNewMessage(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') handleSendMessage(); else broadcastTyping(); }}
-                  />
-                  <Button onClick={handleSendMessage} disabled={isSending || !newMessage.trim()}>
-                    {isSending ? (<><Loader2 className="h-4 w-4 animate-spin mr-1" /> Sending</>)
-                      : (<><Send className="h-4 w-4 mr-1" /> Send</>)}
-                  </Button>
-                </div>
+              {/* Input */}
+              <div className="p-3 border-t bg-white flex items-center gap-2">
+                <Input
+                  value={newMessage}
+                  onChange={(e) => {
+                    setNewMessage(e.target.value);
+                    broadcastTyping();
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSendMessage();
+                    }
+                  }}
+                  placeholder="Type a message..."
+                  className="flex-1"
+                />
+                <Button onClick={handleSendMessage} disabled={isSending}>
+                  {isSending ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Send className="h-4 w-4" />
+                  )}
+                </Button>
               </div>
             </Card>
           )}
         </div>
       </div>
-
-      {/* Create Room Modal */}
-      <AnimatePresence>
-        {showCreate && (
-          <motion.div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            onMouseDown={() => setShowCreate(false)}>
-            <motion.div className="w-full max-w-md bg-white rounded-2xl shadow-2xl ring-1 ring-black/5"
-              initial={{ y: 24, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 24, opacity: 0 }}
-              onMouseDown={(e) => e.stopPropagation()}>
-              <div className="flex items-center justify-between px-5 py-4 border-b">
-                <div className="flex items-center gap-2">
-                  <Plus className="h-5 w-5" />
-                  <h3 className="font-semibold">Create Room</h3>
-                </div>
-                <button onClick={() => setShowCreate(false)} className="p-1 rounded-md hover:bg-gray-100">
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
-              <div className="p-5 space-y-3">
-                <Input placeholder="Room name" value={roomName} onChange={(e) => setRoomName(e.target.value)} />
-                <Input placeholder="Subject (e.g., Physics)" value={subject} onChange={(e) => setSubject(e.target.value)} />
-                <select className="w-full border rounded px-3 py-2" value={difficulty} onChange={(e) => setDifficulty(e.target.value as Room['difficulty'])}>
-                  <option>Easy</option>
-                  <option>Medium</option>
-                  <option>Hard</option>
-                </select>
-              </div>
-              <div className="px-5 pb-5">
-                <Button className="w-full" onClick={async () => {
-                  if (!roomName.trim() || !subject.trim()) return toast.error('Please fill in room name and subject.');
-                  if (!user) return;
-
-                  const { data: created, error: err } = await supabase
-                    .from('study_rooms')
-                    .insert({
-                      name: roomName.trim(),
-                      subject: subject.trim(),
-                      difficulty,
-                      host_id: user.id,
-                    })
-                    .select('*')
-                    .single();
-
-                  if (err || !created) {
-                    toast.error('Could not create room.');
-                    return;
-                  }
-                  toast.success('Room created');
-                  setShowCreate(false);
-                  setRoomName('');
-                  setSubject('');
-                  setDifficulty('Easy');
-                  // auto-join the new room
-                  await joinRoom(created as Room);
-                }}>
-                  Create Room
-                </Button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Full Leaderboards Modal */}
-      <AnimatePresence>
-        {showBoards && (
-          <motion.div
-            className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            onMouseDown={() => setShowBoards(false)}
-          >
-            <motion.div
-              className="w-full max-w-2xl bg-white rounded-2xl shadow-2xl ring-1 ring-black/5"
-              initial={{ y: 24, opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              exit={{ y: 24, opacity: 0 }}
-              onMouseDown={(e) => e.stopPropagation()}
-              role="dialog"
-              aria-modal="true"
-            >
-              <div className="flex items-center justify-between px-5 py-4 border-b">
-                <div className="flex items-center gap-2">
-                  <Trophy className="h-5 w-5" />
-                  <h3 className="font-semibold">Leaderboards</h3>
-                </div>
-                <button
-                  onClick={() => setShowBoards(false)}
-                  className="p-1 rounded-md hover:bg-gray-100"
-                  aria-label="Close leaderboards"
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-5">
-                <div>
-                  <div className="text-xs font-semibold text-gray-600 mb-2">Today</div>
-                  <div className="space-y-2 max-h-[24rem] overflow-y-auto pr-1">
-                    {top5Today.length === 0 && (
-                      <div className="text-sm text-gray-500">No data yet.</div>
-                    )}
-                    {top5Today.map((r, i) => (
-                      <div
-                        key={`full-today-${r.user_id}`}
-                        className="flex items-center justify-between text-sm"
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className="w-6 text-gray-400 tabular-nums">{i + 1}.</span>
-                          <img
-                            src={r.profile_picture || ''}
-                            className="h-7 w-7 rounded-full bg-gray-200"
-                          />
-                          <span className="truncate max-w-[10rem]">{r.username}</span>
-                        </div>
-                        <span className="tabular-nums text-gray-700">
-                          {formatDuration(r.seconds)}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <div>
-                  <div className="text-xs font-semibold text-gray-600 mb-2">All-time</div>
-                  <div className="space-y-2 max-h-[24rem] overflow-y-auto pr-1">
-                    {top5All.length === 0 && (
-                      <div className="text-sm text-gray-500">No data yet.</div>
-                    )}
-                    {top5All.map((r, i) => (
-                      <div
-                        key={`full-all-${r.user_id}`}
-                        className="flex items-center justify-between text-sm"
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className="w-6 text-gray-400 tabular-nums">{i + 1}.</span>
-                          <img
-                            src={r.profile_picture || ''}
-                            className="h-7 w-7 rounded-full bg-gray-200"
-                          />
-                          <span className="truncate max-w-[10rem]">{r.username}</span>
-                        </div>
-                        <span className="tabular-nums text-gray-700">
-                          {formatDuration(r.seconds)}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              <div className="px-5 pb-5">
-                <Button
-                  className="w-full"
-                  variant="secondary"
-                  onClick={() => setShowBoards(false)}
-                >
-                  Close
-                </Button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* End-of-session Summary Modal */}
-      <AnimatePresence>
-        {endSummaryOpen && (
-          <motion.div
-            className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            onMouseDown={() => setEndSummaryOpen(false)}
-          >
-            <motion.div
-              className="w-full max-w-md bg-white rounded-2xl shadow-2xl ring-1 ring-black/5"
-              initial={{ y: 24, opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              exit={{ y: 24, opacity: 0 }}
-              onMouseDown={(e) => e.stopPropagation()}
-              role="dialog"
-              aria-modal="true"
-            >
-              <div className="flex items-center justify-between px-5 py-4 border-b">
-                <div className="flex items-center gap-2">
-                  <Clock className="h-5 w-5" />
-                  <h3 className="font-semibold">Session Summary</h3>
-                </div>
-                <button
-                  onClick={() => setEndSummaryOpen(false)}
-                  className="p-1 rounded-md hover:bg-gray-100"
-                  aria-label="Close summary"
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
-
-              <div className="p-5 space-y-4">
-                <div className="text-sm">
-                  <div className="flex items-center justify-between">
-                    <span className="text-gray-500">Active time</span>
-                    <span className="font-medium tabular-nums">
-                      {formatDuration(endSummary.seconds)}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-gray-500">Focus %</span>
-                    <span className="font-medium tabular-nums">{Math.round(endSummary.focusPct)}%</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-gray-500">Pomodoro cycles</span>
-                    <span className="font-medium tabular-nums">{endSummary.cycles}</span>
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Add a quick note (optional)</label>
-                  <textarea
-                    className="w-full border rounded-md p-2 text-sm"
-                    rows={3}
-                    placeholder="What did you accomplish? What to do next?"
-                    value={endNote}
-                    onChange={(e) => setEndNote(e.target.value)}
-                  />
-                </div>
-              </div>
-
-              <div className="px-5 pb-5 grid grid-cols-2 gap-2">
-                <Button
-                  variant="secondary"
-                  onClick={() => setEndSummaryOpen(false)}
-                >
-                  Close
-                </Button>
-                <Button
-                  onClick={async () => {
-                    if (!endNote.trim()) {
-                      setEndSummaryOpen(false);
-                      return;
-                    }
-                    // Save note to the most recent ended session for this user
-                    try {
-                      const { data: last, error: e1 } = await supabase
-                        .from('study_sessions')
-                        .select('id')
-                        .eq('user_id', user!.id)
-                        .not('ended_at', 'is', null)
-                        .order('ended_at', { ascending: false })
-                        .limit(1)
-                        .single();
-
-                      if (!e1 && last?.id) {
-                        await supabase
-                          .from('study_sessions')
-                          .update({ notes: endNote })
-                          .eq('id', last.id);
-                        toast.success('Note saved');
-                      }
-                    } catch {}
-                    setEndNote('');
-                    setEndSummaryOpen(false);
-                  }}
-                >
-                  Save Note
-                </Button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </div>
   );
 }

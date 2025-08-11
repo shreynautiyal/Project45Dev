@@ -8,6 +8,7 @@ import { Landing } from './pages/Landing';
 import Login from './pages/Auth/Login';
 import Signup from './pages/Auth/Signup';
 import SubjectSetup from './pages/Auth/SubjectSetup';
+import 'katex/dist/katex.min.css';
 
 // Protected Pages
 import { Dashboard } from './pages/Dashboard';
@@ -19,7 +20,7 @@ import Flashcards from './pages/Flashcards/Flashcards';
 import StudyArena from './pages/StudyArena/StudyArena';
 
 // NEW: Socials page (friends + profile hub)
-import Socials from './pages/Socials/Socials';
+import Socials from './pages/Profile/Profile';
 import Settings from './pages/Settings/Settings';
 
 function LoadingSpinner() {

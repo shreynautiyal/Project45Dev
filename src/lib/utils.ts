@@ -1,68 +1,45 @@
-import { type ClassValue, clsx } from 'clsx';
-import { twMerge } from 'tailwind-merge';
+// src/lib/utils.ts
+import type { ClassValue } from "clsx";
+import clsx from "clsx";
+import { twMerge } from "tailwind-merge";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-export function formatDate(date: string | Date) {
-  return new Intl.DateTimeFormat('en-US', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric'
-  }).format(new Date(date));
-}
+/**
+ * XP progression helpers
+ * Curve: next level cost = 100 + level * 50 (Level 1 at 0 XP)
+ */
+export type XPProgress = {
+  level: number;          // current level (1..99)
+  progress: number;       // 0..1 within current level
+  percent: number;        // 0..100
+  currentInLevel: number; // XP accumulated within this level
+  nextLevelCost: number;  // XP needed from this level to the next
+  toNext: number;         // XP still required to reach next level
+};
 
-export function formatTime(seconds: number) {
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = seconds % 60;
-  return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
-}
+export function getXPProgress(totalXp: number): XPProgress {
+  let level = 1;
+  let remaining = Math.max(0, Math.floor(totalXp || 0));
+  let cost = 100;
 
-export function calculateXPForLevel(level: number) {
-  return level * 1000;
-}
+  while (remaining >= cost && level < 99) {
+    remaining -= cost;
+    level++;
+    cost = 100 + level * 50;
+  }
 
-export function getLevelFromXP(xp: number) {
-  return Math.floor(xp / 1000) + 1;
-}
+  const nextLevelCost = cost;
+  const progress = nextLevelCost ? Math.min(1, Math.max(0, remaining / nextLevelCost)) : 0;
 
-export function getXPProgress(xp: number) {
-  const level = getLevelFromXP(xp);
-  const currentLevelXP = (level - 1) * 1000;
-  const nextLevelXP = level * 1000;
-  const progress = xp - currentLevelXP;
-  const total = nextLevelXP - currentLevelXP;
-  
   return {
     level,
     progress,
-    total,
-    percentage: (progress / total) * 100
+    percent: Math.round(progress * 100),
+    currentInLevel: remaining,
+    nextLevelCost,
+    toNext: Math.max(0, nextLevelCost - remaining),
   };
 }
-
-export const IB_SUBJECTS = [
-  'Mathematics AA',
-  'Mathematics AI',
-  'English A Literature',
-  'English A Language & Literature',
-  'Biology',
-  'Chemistry',
-  'Physics',
-  'History',
-  'Economics',
-  'Business Management',
-  'Psychology',
-  'Geography',
-  'Visual Arts',
-  'Theory of Knowledge',
-  'Extended Essay'
-];
-
-export const ESSAY_TYPES = {
-  english_paper1: 'English A Paper 1',
-  english_paper2: 'English A Paper 2',
-  tok_essay: 'TOK Essay',
-  extended_essay: 'Extended Essay'
-};
