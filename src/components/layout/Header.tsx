@@ -6,7 +6,6 @@ import {
   MessageCircle,
   Users,
   User as UserIcon,
-  Target, // Study Arena icon
 } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 
@@ -28,7 +27,6 @@ export function Header() {
     { path: '/chat', icon: MessageCircle, label: 'AI Chat' },
     { path: '/essays', icon: BookOpen, label: 'Essays' },
     { path: '/leaderboard', icon: Trophy, label: 'Leaderboard' },
-    { path: '/arena', icon: Target, label: 'Study Arena' },
     { path: '/social', icon: Users, label: 'Profile' },
   ];
 

@@ -152,18 +152,32 @@ export const Flashcards: React.FC = () => {
   }, []);
 
   // Keyboard shortcuts
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!selectedFolder) return;
-      if (e.key === ' ') { e.preventDefault(); setShowAnswer(s => !s); }
-      if (e.key === 'ArrowRight') nextCard();
-      if (e.key === 'ArrowLeft') prevCard();
-      if (e.key === '1') markCardCorrect(false);
-      if (e.key === '2') markCardCorrect(true);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [selectedFolder, currentCardIndex, flashcards]);
+  // Keyboard shortcuts
+useEffect(() => {
+  const onKey = (e: KeyboardEvent) => {
+    // Don't steal keys while the user is typing or editing
+    const el = e.target as HTMLElement | null;
+    const typing =
+      !!el &&
+      (el.tagName === 'INPUT' ||
+       el.tagName === 'TEXTAREA' ||
+       (el as HTMLElement).isContentEditable ||
+       (el as HTMLSelectElement).tagName === 'SELECT');
+
+    if (typing) return;         // <-- allow spaces in inputs
+    if (!selectedFolder) return;
+
+    if (e.key === ' ') { e.preventDefault(); setShowAnswer(s => !s); }
+    if (e.key === 'ArrowRight') nextCard();
+    if (e.key === 'ArrowLeft')  prevCard();
+    if (e.key === '1')          markCardCorrect(false);
+    if (e.key === '2')          markCardCorrect(true);
+  };
+
+  window.addEventListener('keydown', onKey, { capture: true });
+  return () => window.removeEventListener('keydown', onKey, { capture: true } as any);
+}, [selectedFolder, currentCardIndex, flashcards]);
+
 
   // Load tier + folders on mount/login
   useEffect(() => {
@@ -241,17 +255,38 @@ export const Flashcards: React.FC = () => {
   /* =========================
      Utils
   ========================= */
-  const cleanText = (str: string) => {
-    if (!str) return '';
-    return str
-      .replace(/```(?:json)?/g, '')
-      .replace(/^[\{\[\"\']|[\}\]\"\']$/g, '')
-      .replace(/\\n/g, '\n')
-      .replace(/\\"/g, '"')
-      .replace(/^(question|answer)[":\s]+/gi, '')
-      .replace(/^\d+[\.\)]\s*/, '')
-      .trim();
-  };
+ const cleanText = (input: string) => {
+  if (!input) return '';
+  let s = String(input)
+    .replace(/```(?:json)?/gi, '')      // strip code fences
+    .replace(/\\n/g, '\n')              // unescape \n
+    .replace(/\\"/g, '"')               // unescape quotes
+    // remove "question":, "answer":, question:, answer:
+    .replace(/^\s*("?question"?|"?answer"?)\s*[:=]\s*/i, '')
+    .trim();
+
+  // strip surrounding quotes/brackets/braces/commas at both ends
+  s = s.replace(/^[\s"'`{\[\(]+/, '').replace(/[\s"'`\}\]\),.]+$/, '');
+
+  // remove ? followed by quotes/brackets at end, e.g. ?"
+  s = s.replace(/\?["'\)\]\}]+$/, '?');
+
+  // commas before ? or at end
+  s = s.replace(/,\s*(\?)/g, '$1').replace(/,\s*$/g, '');
+
+  // leftover delimiters at start/end
+  s = s.replace(/^[:;,]+/, '').replace(/[:;,]+$/, '');
+
+  // ensure trailing ? for interrogatives
+  if (/^(what|why|how|where|when|which|who)\b/i.test(s) && !/\?$/.test(s)) {
+    s += '?';
+  }
+
+  return s.trim();
+};
+
+
+
 
   const parseAIFlashcards = (aiCards: AIFlashcard[]): AIFlashcard[] => aiCards.map(card => {
     let question = cleanText(card.question);
@@ -313,6 +348,22 @@ export const Flashcards: React.FC = () => {
       toast.error('Could not create folder');
     }
   };
+const deleteFolder = async (id: string) => {
+  try {
+    // If you DON'T have FK cascade, delete child flashcards first:
+    await supabase.from('flashcards').delete().eq('folder_id', id);
+
+    const { error } = await supabase.from('flashcard_folders').delete().eq('id', id);
+    if (error) throw error;
+
+    setFolders(prev => prev.filter(f => f.id !== id));
+    if (selectedFolder?.id === id) setSelectedFolder(null);
+    toast.success('Folder deleted');
+  } catch (e) {
+    console.error(e);
+    toast.error('Could not delete folder');
+  }
+};
 
   const createFlashcard = async () => {
     if (!user || !selectedFolder) return;
@@ -364,6 +415,19 @@ export const Flashcards: React.FC = () => {
       toast.error('Could not delete card');
     }
   };
+// e.g., drop the ratio and letter count checks
+const notesLookUseful = (text: string) => (text || '').trim().length >= 10;
+
+const STRICT_RULES = `
+You are a strict flashcard generator.
+RULES:
+- Output ONLY a JSON array of 5-10 items. No markdown, no prose, no backticks.
+- Each item: {"question": "...", "answer": "..."}.
+- Questions must be atomic, factual, and answerable from the notes.
+- NO hallucinations: if content isn't supported, OMIT that card.
+- If notes are gibberish/noise, return [].
+- No duplicates. No multi-line essays. Max 250 chars per field.
+` as const;
 
   /* =========================
      Review / SRS
@@ -464,41 +528,86 @@ export const Flashcards: React.FC = () => {
   const canUseAI = tier === 'Pro' || tier === 'Elite';
 
   const generateFromNotes = async () => {
-    if (!selectedFolder || !notes.trim()) return;
-    if (!canUseAI) { toast('Upgrade to Pro to generate with AI'); return; }
+  if (!selectedFolder || !notes.trim()) return;
 
-    setGenerating(true); setGenerateProgress(0); setCurrentlyGenerating(0); setTotalToGenerate(10);
-    try {
-      const rawAiCards: AIFlashcard[] = await aiService.generateFlashcards(notes, selectedFolder.subject, 10);
-      const aiCards = parseAIFlashcards(rawAiCards);
-      setTotalToGenerate(aiCards.length);
+  setGenerating(true);
+  setGenerateProgress(0);
+  setCurrentlyGenerating(0);
+  setTotalToGenerate(10);
 
-      const inserted: Flashcard[] = [];
-      for (let i = 0; i < aiCards.length; i++) {
-        setCurrentlyGenerating(i + 1);
-        const progress = Math.round(((i + 1) / aiCards.length) * 100);
-        setGenerateProgress(progress);
+  try {
+    const rawAiCards: AIFlashcard[] =
+      await aiService.generateFlashcards(notes, selectedFolder.subject, 10);
 
-        const { question, answer } = aiCards[i];
-        const { data, error } = await supabase
-          .from('flashcards')
-          .insert([{ user_id: user!.id, folder_id: selectedFolder.id, subject: selectedFolder.subject, question: cleanText(question), answer: cleanText(answer), difficulty: 1, review_count: 0, correct_count: 0, next_review: new Date().toISOString() }])
-          .select()
-          .single();
-        if (error) throw error;
-        inserted.push(data);
-        await new Promise(r => setTimeout(r, 80));
-      }
-      setFlashcards(prev => [...inserted, ...prev]);
-      setNotes('');
-      toast.success(`Generated ${inserted.length} flashcards from your notes!`);
-    } catch (e) {
-      console.error(e);
-      toast.error('Failed to generate from notes');
-    } finally {
-      setGenerating(false); setGenerateProgress(0); setCurrentlyGenerating(0); setTotalToGenerate(0);
+    const aiCards = parseAIFlashcards(rawAiCards);
+
+    const seen = new Set<string>();
+    const vetted = aiCards
+      .map(c => ({
+        question: cleanText(c.question).slice(0, 250),
+        answer: cleanText(c.answer).slice(0, 250),
+      }))
+      .filter(c => {
+        const ok =
+          c.question.length >= 8 &&
+          c.answer.length >= 3 &&
+          /[A-Za-z]/.test(c.question) &&
+          /[A-Za-z]/.test(c.answer);
+        const key = (c.question + '|' + c.answer).toLowerCase();
+        if (!ok || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+
+    if (!vetted.length) {
+      toast.error('Your notes don’t look usable. Add clearer study notes and try again.');
+      setGenerating(false);
+      return;
     }
-  };
+
+    setTotalToGenerate(vetted.length);
+
+    const inserted: Flashcard[] = [];
+    for (let i = 0; i < vetted.length; i++) {
+      setCurrentlyGenerating(i + 1);
+      setGenerateProgress(Math.round(((i + 1) / vetted.length) * 100));
+
+      const { question, answer } = vetted[i];
+      const { data, error } = await supabase
+        .from('flashcards')
+        .insert([{
+          user_id: user!.id,
+          folder_id: selectedFolder.id,
+          subject: selectedFolder.subject,
+          question: cleanText(question),
+          answer: cleanText(answer),
+          difficulty: 1,
+          review_count: 0,
+          correct_count: 0,
+          next_review: new Date().toISOString(),
+        }])
+        .select()
+        .single();
+
+      if (error) throw error;
+      inserted.push(data);
+      await new Promise(r => setTimeout(r, 80));
+    }
+
+    setFlashcards(prev => [...inserted, ...prev]);
+    setNotes('');
+    toast.success(`Generated ${inserted.length} flashcards from your notes!`);
+  } catch (e) {
+    console.error(e);
+    toast.error('Failed to generate from notes');
+  } finally {
+    setGenerating(false);
+    setGenerateProgress(0);
+    setCurrentlyGenerating(0);
+    setTotalToGenerate(0);
+  }
+};
+
 
   const buildPerformanceSnapshot = () => {
     const total = flashcards.length;
@@ -727,12 +836,45 @@ export const Flashcards: React.FC = () => {
               </div>
             )}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <Button onClick={generateFromNotes} disabled={!notes.trim() || generating} className="w-full"><Brain className="w-4 h-4 mr-2" /> Generate with AI</Button>
-              <Button onClick={requestInsights} disabled={insightsLoading} variant="outline" className="w-full">
-                {insightsLoading ? (<><div className="animate-spin rounded-full h-4 w-4 border-b-2 border-current mr-2" /> Getting Insights...</>) : (<><Sparkles className="w-4 h-4 mr-2" /> Analyze My Weak Spots</>)}
-              </Button>
-              <Button onClick={() => setShowInsights(true)} variant="outline" className="w-full"><Eye className="w-4 h-4 mr-2" /> View Latest Insights</Button>
-            </div>
+  {/* Generate always available */}
+  <Button
+    onClick={generateFromNotes}
+    disabled={!notesLookUseful(notes) || generating}
+    className="w-full"
+  >
+    <Brain className="w-4 h-4 mr-2" /> Generate with AI
+  </Button>
+
+  {canUseAI ? (
+    <>
+      <Button onClick={requestInsights} disabled={insightsLoading} variant="outline" className="w-full">
+        {insightsLoading ? (
+          <>
+            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-current mr-2" />
+            Getting Insights...
+          </>
+        ) : (
+          <>
+            <Sparkles className="w-4 h-4 mr-2" /> Analyze My Weak Spots
+          </>
+        )}
+      </Button>
+      <Button onClick={() => setShowInsights(true)} variant="outline" className="w-full">
+        <Eye className="w-4 h-4 mr-2" /> View Latest Insights
+      </Button>
+    </>
+  ) : (
+    <>
+      <Button variant="outline" className="w-full" disabled>
+        <Sparkles className="w-4 h-4 mr-2" /> Analyze My Weak Spots (Pro)
+      </Button>
+      <Button variant="outline" className="w-full" disabled>
+        <Eye className="w-4 h-4 mr-2" /> View Latest Insights (Pro)
+      </Button>
+    </>
+  )}
+</div>
+
             {insightsText && (
               <div className="p-4 rounded-xl bg-gradient-to-br from-indigo-50 to-purple-50 border border-indigo-100 text-sm whitespace-pre-wrap">{insightsText}</div>
             )}
@@ -853,22 +995,47 @@ export const Flashcards: React.FC = () => {
         <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
           {folders.map((folder, index) => (
             <motion.div key={folder.id} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(index * 0.05, 0.3) }}>
-              <Card className="cursor-pointer hover:shadow-lg transition-all duration-300 overflow-hidden group" onClick={() => setSelectedFolder(folder)}>
-                <div className={`h-24 bg-gradient-to-r ${folder.color} relative`}>
-                  <div className="absolute inset-0 bg-black bg-opacity-20 group-hover:bg-opacity-10 transition-all" />
-                  <div className="absolute bottom-3 left-4 text-white">
-                    <h3 className="font-semibold text-lg">{folder.name}</h3>
-                    <p className="text-sm opacity-90">{folder.subject}</p>
-                  </div>
-                </div>
-                <CardContent className="p-4">
-                  <p className="text-gray-600 text-sm mb-3 line-clamp-2">{folder.description || 'No description provided'}</p>
-                  <div className="flex items-center justify-between text-xs text-gray-500">
-                    <span>Created {new Date(folder.created_at).toLocaleDateString()}</span>
-                    <div className="flex items-center"><Brain className="w-3 h-3 mr-1" /> Study</div>
-                  </div>
-                </CardContent>
-              </Card>
+              <Card
+  className="cursor-pointer hover:shadow-lg transition-all duration-300 overflow-hidden group relative"
+  onClick={() => setSelectedFolder(folder)}
+>
+  <div className={`h-24 bg-gradient-to-r ${folder.color} relative`}>
+    <div className="absolute inset-0 bg-black bg-opacity-20 group-hover:bg-opacity-10 transition-all" />
+
+    {/* Delete button */}
+    <button
+      onClick={(e) => {
+        e.stopPropagation();               // don't open the folder
+        if (confirm('Delete this folder and all its cards?')) {
+          deleteFolder(folder.id);
+        }
+      }}
+      className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity
+                 bg-white/90 hover:bg-white text-red-600 border border-red-200
+                 rounded-xl px-2 py-1 text-xs flex items-center gap-1"
+      title="Delete folder"
+    >
+      <Trash2 className="w-3 h-3" />
+      Delete
+    </button>
+
+    <div className="absolute bottom-3 left-4 text-white">
+      <h3 className="font-semibold text-lg">{folder.name}</h3>
+      <p className="text-sm opacity-90">{folder.subject}</p>
+    </div>
+  </div>
+
+  <CardContent className="p-4">
+    <p className="text-gray-600 text-sm mb-3 line-clamp-2">
+      {folder.description || 'No description provided'}
+    </p>
+    <div className="flex items-center justify-between text-xs text-gray-500">
+      <span>Created {new Date(folder.created_at).toLocaleDateString()}</span>
+      <div className="flex items-center"><Brain className="w-3 h-3 mr-1" /> Study</div>
+    </div>
+  </CardContent>
+</Card>
+
             </motion.div>
           ))}
         </div>

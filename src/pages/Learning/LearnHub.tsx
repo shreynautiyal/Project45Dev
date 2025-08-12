@@ -2,10 +2,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Send, Bot, User, BookOpen, ChevronUp, Flame, Trophy, Zap,
+  Send, Bot, BookOpen, ChevronUp, Flame, Trophy, Zap,
   ShieldCheck, Copy, RotateCcw, Trash2, FileDown, Clock, Loader2,
   Filter, Info, Bookmark, Menu, PenLine, FileText, Hammer, LayoutList, Wand2,
-  Search, FunctionSquare, NotebookText, GraduationCap, AlertTriangle, X, Lock, Image as ImageIcon
+  Search, FunctionSquare, NotebookText, GraduationCap, AlertTriangle, X, Lock, Image as ImageIcon, Crown
 } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import { aiService, ChatMessage } from '../services/aiService';
@@ -14,7 +14,9 @@ import toast from 'react-hot-toast';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
-// import rehypeRaw from 'rehype-raw';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css'; // latex styles
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { tomorrow } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import TextareaAutosize from 'react-textarea-autosize';
@@ -23,10 +25,17 @@ import TextareaAutosize from 'react-textarea-autosize';
    Helpers
 =========================== */
 const normalizeMD = (s: string): string => {
-  return s
+  // clean whitespace a bit
+  const cleaned = s
     .replace(/\r\n?/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .replace(/[ \t]+\n/g, '\n');
+
+  // allow \(...\) & \[...\] (common from math explanations)
+  // remark-math natively supports $...$ and $$...$$; convert the others.
+  const withDisplay = cleaned.replace(/\\\[(.+?)\\\]/gs, (_, inner) => `\n$$\n${inner}\n$$\n`);
+  const withInline = withDisplay.replace(/\\\((.+?)\\\)/gs, (_, inner) => `$${inner}$`);
+  return withInline;
 };
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -35,6 +44,7 @@ type Subject = { id: string; name: string; icon: string; color: string };
 type RoomRow = { user_id: string; subject: string; messages: ChatMessage[] | string | null; updated_at?: string | null };
 type TierKey = 'free' | 'pro' | 'elite';
 type Level = 'HL' | 'SL';
+type Course = 'A' | 'B' | 'Ab Initio';
 
 const parseMessages = (raw: RoomRow['messages']): ChatMessage[] => {
   try {
@@ -57,9 +67,25 @@ const copyToClipboard = async (text: string) => {
 
 const STORAGE_SUBJECT_KEY = 'lh.selectedSubjectId';
 const STORAGE_LEVEL_KEY = 'lh.level';
+const STORAGE_COURSE_KEY = 'lh.course';
+
+// Language detection (keeps English Lang&Lit treated as language too for Course selector if desired)
+const isLanguageSubject = (name?: string) => {
+  if (!name) return false;
+  const nonLang = /(math|physics|chem|bio|economics?|business|computer|cs)/i.test(name);
+  return /(spanish|español|french|français|english|arabic|german|chinese)/i.test(name) && !nonLang;
+};
+
+const isMathSubject = (name?: string) => {
+  if (!name) return false;
+  return /(math\s*aa|math\s*ai|mathematics\s*aa|mathematics\s*ai)/i.test(name);
+};
+
+const toInitials = (s?: string | null) =>
+  (s || '').trim().split(/\s+/).slice(0, 2).map(x => x[0]?.toUpperCase()).join('') || 'U';
 
 /* ===========================
-   Config (no default subjects)
+   Config
 =========================== */
 
 // Quotas + burst caps (client hints; server RPC is the source of truth)
@@ -77,6 +103,121 @@ const SLASH_COMMANDS = [
   { key: '/pastpaper', label: 'Past paper style',       hint: 'Exam-style Qs + marks',              icon: <GraduationCap className="w-4 h-4" /> },
 ] as const;
 type SlashKey = typeof SLASH_COMMANDS[number]['key'];
+
+/* ===========================
+   Subject-aware intent helpers
+=========================== */
+
+// Minimal IB topic maps (extend anytime)
+const TOPIC_MAPS = {
+  math: {
+    1: 'Number & Algebra',
+    2: 'Functions',
+    3: 'Trigonometry',
+    4: 'Vectors',
+    5: 'Statistics & Probability',
+    6: 'Calculus',
+  },
+  physics: {
+    1: 'Measurements & Uncertainties',
+    2: 'Mechanics',
+    3: 'Thermal Physics',
+    4: 'Waves',
+    5: 'Electricity & Magnetism',
+    6: 'Circular Motion & Gravitation',
+    7: 'Atomic, Nuclear & Particle Physics',
+  },
+  chemistry: {
+    1: 'Stoichiometric Relationships',
+    2: 'Atomic Structure',
+    3: 'Periodicity',
+    4: 'Chemical Bonding & Structure',
+    5: 'Energetics/Thermochemistry',
+    6: 'Chemical Kinetics',
+  },
+  biology: {
+    1: 'Cell Biology',
+    2: 'Molecular Biology',
+    3: 'Genetics',
+    4: 'Ecology',
+    5: 'Evolution & Biodiversity',
+    6: 'Human Physiology',
+  },
+  economics: {
+    1: 'Microeconomics',
+    2: 'Macroeconomics',
+    3: 'International Economics',
+    4: 'Development Economics',
+  },
+};
+
+const subjectKey = (name?: string) => {
+  const s = (name || '').toLowerCase();
+  if (/math/.test(s)) return 'math';
+  if (/phys/.test(s)) return 'physics';
+  if (/chem/.test(s)) return 'chemistry';
+  if (/bio/.test(s)) return 'biology';
+  if (/econ/.test(s)) return 'economics';
+  if (/english/.test(s)) return 'english';
+  if (/spanish|español/.test(s)) return 'spanish';
+  if (/french|français/.test(s)) return 'french';
+  return 'other';
+};
+
+const extractTopicNumber = (text: string): number | null => {
+  const m = text.toLowerCase().match(/topic\s*(\d{1,2})/);
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  if (Number.isNaN(n)) return null;
+  return n;
+};
+
+const addLanguagePedagogyHint = (subjName: string, content: string) => {
+  // Teach in English, but with French/Spanish style terminology/method.
+  if (/spanish|español/i.test(subjName)) {
+    return `Teach in English but follow Spanish classroom style and terminology where appropriate (you may mix as helpful). Use brief English explanations.\n\n${content}`;
+  }
+  if (/french|français/i.test(subjName)) {
+    return `Teach in English but follow French classroom style and terminology where appropriate (you may mix as helpful). Use brief English explanations.\n\n${content}`;
+  }
+  return content;
+};
+
+const specializePrompt = (subj: Subject | null, raw: string, level: Level, course?: Course) => {
+  if (!subj) return raw;
+
+  let content = raw.trim();
+  const key = subjectKey(subj.name);
+
+  // Add language pedagogy hint for FR/ES subjects
+  content = addLanguagePedagogyHint(subj.name, content);
+
+  // If user referenced "topic X", map to syllabus
+  const topicNum = extractTopicNumber(content);
+  if (topicNum) {
+    const map = (TOPIC_MAPS as any)[key];
+    const topicName = map?.[topicNum];
+    if (topicName) {
+      // Promote to exam/practice intent if they said "questions"
+      const wantsQuestions = /\b(question|questions|practice|ppq|past paper|exam)\b/i.test(content);
+      const promptIntent = wantsQuestions ? 'Generate exam-style practice (with marks and concise markscheme).' : 'Explain thoroughly with worked examples.';
+      const courseTag = isLanguageSubject(subj.name) && course ? ` (${course})` : '';
+      return `[${level}] ${subj.name}${courseTag} — ${key === 'economics' ? 'Syllabus' : 'Topic'} ${topicNum}: ${topicName}.
+${promptIntent}
+Original ask: ${raw}`;
+    }
+  }
+
+  // If they say "send me questions" without topic #, still smart-default to exam style
+  if (/\b(question|questions|practice|ppq|past paper|exam)\b/i.test(content)) {
+    return `[${level}] ${subj.name}${isLanguageSubject(subj.name) && course ? ` (${course})` : ''} — Generate 3 exam-style questions with marks and concise markscheme, targeted to the user’s request.
+Original ask: ${raw}`;
+  }
+
+  // Otherwise pass through with light subject scaffolding
+  return `[${level}] ${subj.name}${isLanguageSubject(subj.name) && course ? ` (${course})` : ''} — Respond IB-appropriately.
+${content}`;
+};
 
 /* ===========================
    Component
@@ -114,6 +255,12 @@ const LearnHub: React.FC = () => {
   // IB Level (HL/SL)
   const [level, setLevel] = useState<Level>(() => (localStorage.getItem(STORAGE_LEVEL_KEY) as Level) || 'HL');
 
+  // Language Course (A / B / Ab Initio) – only shown for language subjects
+  const [course, setCourse] = useState<Course | undefined>(() => {
+    const v = localStorage.getItem(STORAGE_COURSE_KEY) as Course | null;
+    return v || undefined;
+  });
+
   // chat state
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [newMessage, setNewMessage] = useState('');
@@ -150,6 +297,13 @@ const LearnHub: React.FC = () => {
 
   // composer ref for insertion
   const composerTextRef = useRef<HTMLTextAreaElement>(null);
+
+  // Upgrade modal
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
+  const openUpgrade = (why?: string) => {
+    if (why) toast(why);
+    setUpgradeOpen(true);
+  };
 
   /* --------- Load User Subjects ---------- */
   useEffect(() => {
@@ -191,7 +345,7 @@ const LearnHub: React.FC = () => {
     return () => { cancelled = true; };
   }, [user?.id]);
 
-  // Persist selection + level
+  // Persist selection + level + course
   useEffect(() => {
     if (selectedSubject?.id) localStorage.setItem(STORAGE_SUBJECT_KEY, selectedSubject.id);
   }, [selectedSubject?.id]);
@@ -199,6 +353,24 @@ const LearnHub: React.FC = () => {
   useEffect(() => {
     localStorage.setItem(STORAGE_LEVEL_KEY, level);
   }, [level]);
+
+  useEffect(() => {
+    if (course) localStorage.setItem(STORAGE_COURSE_KEY, course);
+  }, [course]);
+
+  // When subject changes, set default Course if it's a language
+  useEffect(() => {
+    if (!selectedSubject?.name) return;
+    if (isLanguageSubject(selectedSubject.name)) {
+      // Heuristic default
+      const n = selectedSubject.name.toLowerCase();
+      if (/ab\s*initio/.test(n)) setCourse('Ab Initio');
+      else if (/lang/.test(n) || (/english/.test(n) && /lang/.test(n))) setCourse('A');
+      else setCourse((prev) => prev || 'B');
+    } else {
+      setCourse(undefined);
+    }
+  }, [selectedSubject?.name]);
 
   /* --------- Load history when subject changes ---------- */
   useEffect(() => {
@@ -405,7 +577,7 @@ const LearnHub: React.FC = () => {
 
     if (count >= capDaily) {
       if (tier === 'free') {
-        toast.error('Daily message limit reached. Upgrade for more.');
+        openUpgrade('Free daily message limit reached.');
         return false;
       }
       toast.error('You have reached today’s message limit for your tier.');
@@ -419,17 +591,11 @@ const LearnHub: React.FC = () => {
 
   /* --------- Image upload (Supabase Storage) ---------- */
 
-  // Free plan: 1 image/day; Pro/Elite: unlimited (front-end)
+  // Free plan: hidden & blocked; Pro/Elite: visible and allowed
   const canUploadImageNow = (): { ok: boolean; reason?: string } => {
     const plan = (profile?.tier || 'free').toLowerCase();
     if (plan !== 'free') return { ok: true };
-    if (!user?.id) return { ok: false, reason: 'Please log in first.' };
-    const key = `lh.img.${user.id}.${todayISO()}`;
-    const count = parseInt(localStorage.getItem(key) || '0', 10) || 0;
-    if (count >= 1) {
-      return { ok: false, reason: 'Free plan includes 1 image upload per day. Upgrade to Pro for more.' };
-    }
-    return { ok: true };
+    return { ok: false, reason: 'Image uploads are a Pro feature.' };
   };
 
   const bumpImageUploadCount = () => {
@@ -460,7 +626,7 @@ const LearnHub: React.FC = () => {
 
     const check = canUploadImageNow();
     if (!check.ok) {
-      toast.error(check.reason || 'Image uploads are limited on your plan.');
+      openUpgrade(check.reason || 'Upgrade to Pro to upload images.');
       return;
     }
 
@@ -523,7 +689,10 @@ const LearnHub: React.FC = () => {
     const ok = await beforeSendRateChecks();
     if (!ok) return;
 
-    const userMessage: ChatMessage = { role: 'user', content };
+    // 🔎 Subject-aware specialization
+    const specialized = specializePrompt(selectedSubject, content, level, course);
+
+    const userMessage: ChatMessage = { role: 'user', content: specialized };
     const updatedMessages = [...messages, userMessage];
 
     setMessages(updatedMessages);
@@ -535,7 +704,7 @@ const LearnHub: React.FC = () => {
         updatedMessages,
         selectedSubject.name,
         (profile?.tier || 'free') as TierKey,
-        { mode: activeMode || undefined, level } // pass HL/SL
+        { mode: activeMode || undefined, level, course } // pass HL/SL + Course
       );
 
       const assistantMessage: ChatMessage = { role: 'assistant', content: response };
@@ -543,14 +712,17 @@ const LearnHub: React.FC = () => {
       setMessages(finalMessages);
       await saveChatHistory(finalMessages);
 
+      // ✅ award XP via RPC
       try {
-        await supabase.from('xp_events').insert({
-          user_id: user!.id,
-          source: 'ai_chat',
-          amount: 5,
-          description: `AI chat (${selectedSubject.id}, ${level})`
+        await supabase.rpc('add_xp', {
+          p_amount: 5,
+          p_source: 'ai_chat',
+          p_description: `AI chat (${selectedSubject.id}, ${level}${course ? `, ${course}` : ''})`,
         });
-      } catch { /* ignore */ }
+      } catch (e) {
+        // silent fail (no table writes from client)
+        console.debug('[add_xp] failed:', e);
+      }
     } catch (err: any) {
       toast.error(err?.message || 'Something went wrong.');
     } finally {
@@ -575,21 +747,23 @@ const LearnHub: React.FC = () => {
         base,
         selectedSubject.name,
         (profile?.tier || 'free') as TierKey,
-        { mode: activeMode || undefined, level, regenerate: true }
+        { mode: activeMode || undefined, level, course, regenerate: true }
       );
       const assistantMessage: ChatMessage = { role: 'assistant', content: response };
       const final = [...base, assistantMessage];
       setMessages(final);
       await saveChatHistory(final);
 
+      // ✅ smaller XP via RPC for regen
       try {
-        await supabase.from('xp_events').insert({
-          user_id: user!.id,
-          source: 'ai_chat',
-          amount: 3,
-          description: `Regenerate (${selectedSubject.id}, ${level})`
+        await supabase.rpc('add_xp', {
+          p_amount: 3,
+          p_source: 'ai_regen',
+          p_description: `Regenerate (${selectedSubject.id}, ${level}${course ? `, ${course}` : ''})`,
         });
-      } catch { /* ignore */ }
+      } catch (e) {
+        console.debug('[add_xp regen] failed:', e);
+      }
     } catch {
       toast.error('Could not regenerate.');
     } finally {
@@ -625,7 +799,11 @@ Provide band, marks, and 2–3 actionable improvements.
   };
 
   const onKeyDownComposer = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!cooldown && dailyCount < (TIER_DAILY_QUOTA[tier] ?? 25)) handleSendMessage(); }
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      const tierCap = TIER_DAILY_QUOTA[tier] ?? 25;
+      if (!cooldown && dailyCount < tierCap) handleSendMessage();
+    }
   };
 
   const exportChatJson = () => {
@@ -642,6 +820,7 @@ Provide band, marks, and 2–3 actionable improvements.
   const tierCap = TIER_DAILY_QUOTA[tier] ?? 25;
   const minuteCap = TIER_BURST_CAP_PER_MIN[tier] ?? 6;
   const streak = (profile as any)?.streak_days ?? (profile as any)?.streakDays ?? 0;
+  const messagesLeft = Math.max(0, tierCap - dailyCount);
 
   // loading subjects
   if (subjects === null || subjectsLoading) {
@@ -691,7 +870,7 @@ Provide band, marks, and 2–3 actionable improvements.
             </span>
           ) : (
             <span>
-              You’re close to today’s limit ({dailyCount}/{tierCap}).{' '}
+              You’re close to today’s limit ({dailyCount}/{tierCap}). You have <strong>{messagesLeft}</strong> messages left today.{' '}
               <a href="/pricing" className="underline underline-offset-4">Upgrade</a> for higher limits.
             </span>
           )}
@@ -722,11 +901,11 @@ Provide band, marks, and 2–3 actionable improvements.
           <span className="text-xs px-2 py-1 rounded-full bg-neutral-100 text-neutral-800 hidden sm:inline-flex items-center gap-1">
             <ShieldCheck className="w-3 h-3" /> {tier.toUpperCase()}
           </span>
-          <span className="text-xs px-2 py-1 rounded-full bg-neutral-100 text-neutral-800 hidden md:inline-flex items-center gap-1">
+          <span className="text-xs px-2 py-1 rounded-full bg-neutral-100 text-neutral-800 hidden md:inline-flex items-center gap-1" title="Burst messages per minute">
             <Clock className="w-3 h-3" /> {minuteCount}/{minuteCap} /min
           </span>
-          <span className="text-xs px-2 py-1 rounded-full bg-neutral-100 text-neutral-800 hidden md:inline-flex items-center gap-1">
-            <Zap className="w-3 h-3" /> {dailyCount}/{tierCap} today
+          <span className="text-xs px-2 py-1 rounded-full bg-neutral-100 text-neutral-800 hidden md:inline-flex items-center gap-1" title="Daily usage">
+            <Zap className="w-3 h-3" /> {dailyCount}/{tierCap} today • {messagesLeft} left
           </span>
           {cooldown && (
             <span className="text-xs px-2 py-1 rounded-full bg-neutral-100 text-neutral-800 flex items-center gap-1" title="Rate limit cooldown">
@@ -775,25 +954,46 @@ Provide band, marks, and 2–3 actionable improvements.
               ))}
             </div>
 
-            <div className="mt-auto p-4 border-t space-y-3">
-              {/* HL / SL toggle */}
-              <div className="flex items-center justify-between">
-                <div className="text-xs text-neutral-600 flex items-center gap-1">
-                  <Info className="w-3 h-3" /> IB Level
+            <div className="mt-auto p-4 border-t space-y-4">
+              {/* HL / SL clear chips */}
+              <div>
+                <div className="text-xs text-neutral-600 flex items-center gap-1 mb-2">
+                  <Info className="w-3 h-3" /> Level
                 </div>
-                <div className="inline-flex rounded-md border p-0.5">
+                <div className="grid grid-cols-2 gap-1" role="radiogroup" aria-label="IB Level">
                   {(['HL','SL'] as Level[]).map(l => (
                     <button
                       key={l}
                       onClick={() => setLevel(l)}
-                      className={`text-xs px-2 py-1 rounded ${level === l ? 'bg-neutral-900 text-white' : 'text-neutral-800 hover:bg-neutral-50'}`}
-                      aria-pressed={level === l}
+                      className={`px-3 py-2 rounded-lg border text-sm ${level===l ? 'bg-neutral-900 text-white border-neutral-900' : 'hover:bg-neutral-50'}`}
+                      aria-pressed={level===l}
                     >
                       {l}
                     </button>
                   ))}
                 </div>
               </div>
+
+              {/* Course (A / B / Ab Initio) – only for language subjects */}
+              {isLanguageSubject(selectedSubject?.name) && (
+                <div>
+                  <div className="text-xs text-neutral-600 flex items-center gap-1 mb-2">
+                    <Info className="w-3 h-3" /> Course
+                  </div>
+                  <div className="grid grid-cols-3 gap-1" role="radiogroup" aria-label="Language Course">
+                    {(['A','B','Ab Initio'] as Course[]).map(c => (
+                      <button
+                        key={c}
+                        onClick={() => setCourse(c)}
+                        className={`px-3 py-2 rounded-lg border text-sm ${course===c ? 'bg-neutral-900 text-white border-neutral-900' : 'hover:bg-neutral-50'}`}
+                        aria-pressed={course===c}
+                      >
+                        {c}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Modes */}
               <div>
@@ -831,7 +1031,7 @@ Provide band, marks, and 2–3 actionable improvements.
                   <Bookmark className="w-3 h-3" /> Rubric
                 </button>
                 <button onClick={clearChatForSubject} className="text-xs px-2 py-1.5 rounded-md border hover:bg-neutral-50 flex items-center gap-1" title="Clear this subject's chat">
-                  <Trash2 className="w-3 h-3" /> Clear
+                  <Trash2 className="w-3 h-3" /> Delete chat
                 </button>
               </div>
             </div>
@@ -849,11 +1049,16 @@ Provide band, marks, and 2–3 actionable improvements.
                   <div>
                     <h3 className="text-lg font-bold text-neutral-900">{selectedSubject.name} — {level} AI Tutor</h3>
                     <p className="text-neutral-600 text-xs sm:text-sm">
-                      Ask anything. Use <code className="px-1 rounded bg-neutral-100">/</code> for commands. Need math? Just type it out as you would normally!
+                      Ask anything. Use <code className="px-1 rounded bg-neutral-100">/</code> for commands.
+                      {isMathSubject(selectedSubject?.name) ? ' Need math? Just type it out as you would normally!' : ''}
                     </p>
                   </div>
                 </div>
                 <div className="hidden sm:flex items-center gap-2 text-xs text-neutral-800">
+                  {isLanguageSubject(selectedSubject?.name) && course && (
+                    <span className="px-2 py-1 rounded-full bg-neutral-900 text-white">Course: {course}</span>
+                  )}
+                  <span className="px-2 py-1 rounded-full bg-neutral-900 text-white">Level: {level}</span>
                   <span className="px-2 py-1 rounded-full bg-neutral-100 flex items-center gap-1" title="Streak days">
                     <Flame className="w-3 h-3" /> {streak}d
                   </span>
@@ -895,7 +1100,16 @@ Provide band, marks, and 2–3 actionable improvements.
                   </div>
                 </div>
               ) : (
-                messages.map((m, i) => <MessageBubble key={i} m={m} i={i} onRegenerate={i === messages.length - 1 ? handleRegenerateLast : undefined} />)
+                messages.map((m, i) => (
+                  <MessageBubble
+                    key={i}
+                    m={m}
+                    i={i}
+                    userAvatar={profile?.profile_picture || undefined}
+                    userName={profile?.username || user?.email || 'You'}
+                    onRegenerate={i === messages.length - 1 ? handleRegenerateLast : undefined}
+                  />
+                ))
               )}
 
               {/* typing */}
@@ -969,7 +1183,7 @@ Provide band, marks, and 2–3 actionable improvements.
                   value={newMessage}
                   onChange={(e) => setNewMessage(e.target.value)}
                   onKeyDown={onKeyDownComposer}
-                  placeholder={`Ask your ${selectedSubject?.name} (${level}) question… Use “/” for commands. Type LaTeX directly if needed.`}
+                  placeholder={`Ask your ${selectedSubject?.name} (${level}) question… Use “/” for commands. ${isMathSubject(selectedSubject?.name) ? 'Type LaTeX if you want.' : ''}`}
                   className="w-full border border-neutral-300 rounded-xl px-4 py-3 focus:ring-2 focus:ring-black focus:border-transparent leading-6"
                   minRows={1}
                   maxRows={12}
@@ -983,40 +1197,32 @@ Provide band, marks, and 2–3 actionable improvements.
                     <Wand2 className="w-3 h-3" /> {palettePinned ? 'Close' : 'Commands'}
                   </button>
 
-                  <button
-                    onClick={() => {
-                      if (activeMode) {
-                        setNewMessage(`[${level}] ` + (MODE_PROMPTS[activeMode] || 'Explain like an IB tutor.') + '\n\n');
-                      }
-                    }}
-                    className="px-2 py-1 rounded-md border hover:bg-neutral-50 flex items-center gap-1"
-                    title="Insert current mode prompt"
-                  >
-                    <SparklesIcon /> {activeMode || 'Mode'}
-                  </button>
-
-                  {/* Image upload */}
-                  <input
-                    id="img-input"
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (f) handleImageUpload(f);
-                      e.currentTarget.value = '';
-                    }}
-                  />
-                  <label
-                    htmlFor="img-input"
-                    className="px-2 py-1 rounded-md border hover:bg-neutral-50 flex items-center gap-1 cursor-pointer"
-                    title="Insert image (Free: 1/day; Pro/Elite: unlimited)"
-                  >
-                    <ImageIcon className="w-3 h-3" /> Image
-                  </label>
+                  {/* Image upload (Pro/Elite only) */}
+                  {tier !== 'free' && (
+                    <>
+                      <input
+                        id="img-input"
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          if (f) handleImageUpload(f);
+                          e.currentTarget.value = '';
+                        }}
+                      />
+                      <label
+                        htmlFor="img-input"
+                        className="px-2 py-1 rounded-md border hover:bg-neutral-50 flex items-center gap-1 cursor-pointer"
+                        title="Insert image (Pro/Elite)"
+                      >
+                        <ImageIcon className="w-3 h-3" /> Image
+                      </label>
+                    </>
+                  )}
 
                   <span className="ml-auto hidden sm:flex items-center gap-2">
-                    Tip: Type LaTeX directly (e.g. \int_0^1 x^2 dx). I’ll understand it.
+                    {isMathSubject(selectedSubject?.name) ? 'Tip: Type LaTeX directly (e.g. \\int_0^1 x^2 dx).' : `You have ${messagesLeft} message${messagesLeft === 1 ? '' : 's'} left today.`}
                   </span>
                 </div>
               </div>
@@ -1038,28 +1244,69 @@ Provide band, marks, and 2–3 actionable improvements.
           </div>
         </section>
       </div>
+
+      {/* Upgrade modal */}
+      <UpgradeModal open={upgradeOpen} onClose={() => setUpgradeOpen(false)} />
     </div>
   );
 };
 
 /* ============ Small utils/components ============ */
 
-const SparklesIcon: React.FC = () => (
-  <svg width="12" height="12" viewBox="0 0 24 24" className="inline-block align-middle">
-    <path d="M12 2l1.9 5.8L20 10l-6.1 2.2L12 18l-1.9-5.8L4 10l6.1-2.2L12 2z" fill="currentColor" />
-  </svg>
-);
+const UpgradeModal: React.FC<{ open: boolean; onClose: () => void; reason?: string }> = ({ open, onClose, reason }) => {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center p-4" role="dialog" aria-modal="true">
+      <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl border">
+        <div className="p-5">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full bg-neutral-900 text-white flex items-center justify-center">
+              <Crown className="w-5 h-5" />
+            </div>
+            <h3 className="text-lg font-semibold">Upgrade to Pro</h3>
+          </div>
+          <p className="mt-3 text-sm text-neutral-700">
+            {reason || 'You’ve reached the Free plan limit.'} Pro unlocks higher daily messages, faster replies, and image uploads.
+          </p>
+          <div className="mt-4 flex gap-2">
+            <a href="/pricing" className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-neutral-900 text-white hover:bg-black">
+              <Crown className="w-4 h-4" /> Upgrade now
+            </a>
+            <button onClick={onClose} className="px-4 py-2 rounded-lg border hover:bg-neutral-50">Maybe later</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
 
-const MessageBubble: React.FC<{ m: ChatMessage; i: number; onRegenerate?: () => void }> = React.memo(({ m, i, onRegenerate }) => {
+const MessageBubble: React.FC<{
+  m: ChatMessage;
+  i: number;
+  onRegenerate?: () => void;
+  userAvatar?: string;
+  userName?: string;
+}> = React.memo(({ m, i, onRegenerate, userAvatar, userName }) => {
   const isUser = m.role === 'user';
+  const initials = toInitials(userName);
   return (
     <motion.div initial={false} animate={{ opacity: 1, y: 0 }} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div className={`max-w-3xl w-full flex ${isUser ? 'flex-row-reverse' : 'flex-row'} items-start gap-3`}>
         <div
-          className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${isUser ? 'bg-neutral-900 ml-1' : 'bg-neutral-200 mr-1'}`}
+          className={`flex-shrink-0 w-8 h-8 rounded-full overflow-hidden ${isUser ? 'ml-1' : 'mr-1'}`}
           title={isUser ? 'You' : 'AI Tutor'}
         >
-          {isUser ? <User className="w-4 h-4 text-white" /> : <Bot className="w-4 h-4 text-neutral-800" />}
+          {isUser ? (
+            userAvatar ? (
+              <img src={userAvatar} alt="You" className="w-full h-full object-cover" />
+            ) : (
+              <div className="w-full h-full bg-neutral-900 text-white text-xs flex items-center justify-center">{initials}</div>
+            )
+          ) : (
+            <div className="w-full h-full bg-neutral-200 flex items-center justify-center">
+              <Bot className="w-4 h-4 text-neutral-800" />
+            </div>
+          )}
         </div>
         <div className={`${isUser ? 'bg-neutral-900 text-white' : 'bg-white text-neutral-900 border'} px-4 py-3 rounded-2xl shadow-sm`}>
           {isUser ? (
@@ -1067,7 +1314,8 @@ const MessageBubble: React.FC<{ m: ChatMessage; i: number; onRegenerate?: () => 
           ) : (
             <div className="prose prose-sm md:prose-base max-w-none">
               <ReactMarkdown
-                remarkPlugins={[remarkGfm, remarkBreaks]}
+                remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
+                rehypePlugins={[rehypeKatex]}
                 components={{
                   p: (p) => <p className="my-3 leading-7" {...p} />,
                   strong: (p) => <strong className="font-semibold" {...p} />,
@@ -1076,7 +1324,7 @@ const MessageBubble: React.FC<{ m: ChatMessage; i: number; onRegenerate?: () => 
                   ol: (p) => <ol className="my-3 list-decimal pl-5" {...p} />,
                   li: (p) => <li className="my-1" {...p} />,
                   blockquote: (p) => <blockquote className="border-l-4 pl-3 italic text-neutral-700 my-3" {...p} />,
-                  code({ className, children, ...props }: any) {
+                                    code({ className, children, ...props }: any) {
                     const match = /language-(\w+)/.exec(className || '');
                     const isInline = !className?.includes('language-');
                     return !isInline && match ? (
@@ -1105,10 +1353,18 @@ const MessageBubble: React.FC<{ m: ChatMessage; i: number; onRegenerate?: () => 
           )}
           {!isUser && onRegenerate && (
             <div className="flex gap-2 mt-2 opacity-70">
-              <button className="text-xs flex items-center gap-1 hover:opacity-100" onClick={() => copyToClipboard(m.content)} title="Copy">
+              <button
+                className="text-xs flex items-center gap-1 hover:opacity-100"
+                onClick={() => copyToClipboard(m.content)}
+                title="Copy"
+              >
                 <Copy className="w-3 h-3" /> Copy
               </button>
-              <button className="text-xs flex items-center gap-1 hover:opacity-100" onClick={onRegenerate} title="Regenerate">
+              <button
+                className="text-xs flex items-center gap-1 hover:opacity-100"
+                onClick={onRegenerate}
+                title="Regenerate"
+              >
                 <RotateCcw className="w-3 h-3" /> Regenerate
               </button>
             </div>

@@ -1,5 +1,5 @@
 // src/pages/Upgrade.tsx
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft, ArrowRight, Crown, Zap, Trophy, Sparkles, ShieldCheck,
@@ -9,6 +9,7 @@ import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card'
 import { Button } from '../components/ui/Button';
 import { Badge as BadgeUI } from '../components/ui/Badge';
 import { useAuthStore } from '../store/authStore';
+import { supabase } from '../lib/supabase';
 
 type PlanKey = 'free' | 'pro' | 'elite';
 
@@ -16,6 +17,12 @@ const PLAN_PRICES: Record<PlanKey, string> = {
   free: '$0',
   pro: '$6',
   elite: '$30',
+};
+
+// --- YOUR Ziina share links (test/live as you configured)
+const ZIINA_LINKS: Record<'pro' | 'elite', string> = {
+  pro: 'https://pay.ziina.com/project45IB/8Ug10UmwO',
+  elite: 'https://pay.ziina.com/project45IB/2JjL3wDsc',
 };
 
 const FEATURES = [
@@ -30,22 +37,10 @@ const FEATURES = [
 ] as const;
 
 const TESTIMONIALS = [
-  {
-    quote: 'Pro removed the ceiling. My essays jumped a band in two weeks.',
-    name: 'Amirah, IB Eng LangLit SL',
-  },
-  {
-    quote: 'Elite analytics showed me exactly why I was stuck at 6s in Paper 1.',
-    name: 'Leo, IB Year 13',
-  },
-  {
-    quote: 'StudyArena + Pomodoro turned 4h of chaos into 2.5h of real work.',
-    name: 'Sofia, HL Maths AA',
-  },
-  {
-    quote: 'Unlimited marking with actionable edits… It’s like having a coach.',
-    name: 'Ravi, TOK',
-  },
+  { quote: 'Pro removed the ceiling. My essays jumped a band in two weeks.', name: 'Amirah, IB Eng LangLit SL' },
+  { quote: 'Elite analytics showed me exactly why I was stuck at 6s in Paper 1.', name: 'Leo, IB Year 13' },
+  { quote: 'StudyArena + Pomodoro turned 4h of chaos into 2.5h of real work.', name: 'Sofia, HL Maths AA' },
+  { quote: 'Unlimited marking with actionable edits… It’s like having a coach.', name: 'Ravi, TOK' },
 ];
 
 function Check({ on = true }: { on?: boolean }) {
@@ -64,14 +59,12 @@ function formatDuration(ms: number) {
 export default function Upgrade() {
   const navigate = useNavigate();
   const { profile } = useAuthStore() as any;
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
 
-  // Optional: allow ?promoEnds=YYYY-MM-DDTHH:mm:ssZ override for marketing
+  // ----- Promo timer
   const paramEnd = params.get('promoEnds');
-  const defaultEnd = new Date(Date.now() + 1000 * 60 * 60 * 48); // 48h from now
+  const defaultEnd = new Date(Date.now() + 1000 * 60 * 60 * 48);
   const PROMO_END = useMemo(() => (paramEnd ? new Date(paramEnd) : defaultEnd), [paramEnd]);
-
-  // Countdown
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
@@ -80,6 +73,7 @@ export default function Upgrade() {
   const remainingMs = Math.max(0, PROMO_END.getTime() - now);
   const endsSoon = remainingMs > 0;
 
+  // ----- Current plan
   const currentPlan: PlanKey = useMemo(() => {
     const p = (profile?.plan || '').toLowerCase();
     if (p === 'elite') return 'elite';
@@ -87,34 +81,68 @@ export default function Upgrade() {
     return 'free';
   }, [profile?.plan]);
 
+  // ----- Redirect to Ziina (no functions; just share links)
+  const [loadingPlan, setLoadingPlan] = useState<Exclude<PlanKey, 'free'> | null>(null);
+  const goToZiina = useCallback((plan: 'pro' | 'elite') => {
+    setLoadingPlan(plan);
+    window.location.href = ZIINA_LINKS[plan];
+  }, []);
+
+  // ----- Handle return from Ziina
+  const [flashMsg, setFlashMsg] = useState<string | null>(null);
+  useEffect(() => {
+    // Expecting: ?status=success&plan=pro  (set this in each Ziina link's Success URL)
+    const status = params.get('status');
+    const plan = params.get('plan') as 'pro' | 'elite' | null;
+
+    async function activate(planToSet: 'pro' | 'elite') {
+      if (!profile?.id) return;
+      const { error } = await supabase
+        .from('profiles')
+        .update({ plan: planToSet })
+        .eq('id', profile.id);
+      if (!error) {
+        setFlashMsg(`Success! Your account is now on ${planToSet.toUpperCase()}.`);
+      } else {
+        setFlashMsg('Payment succeeded, but we could not update your plan automatically. Please contact support.');
+        console.error('Plan activation error:', error);
+      }
+    }
+
+    if (status === 'success' && (plan === 'pro' || plan === 'elite')) {
+      activate(plan);
+      // Clean the URL so refreshes don’t re-trigger
+      params.delete('status');
+      params.delete('plan');
+      setParams(params, { replace: true });
+    } else if (status === 'cancelled') {
+      setFlashMsg('Checkout cancelled. No changes made.');
+      params.delete('status');
+      setParams(params, { replace: true });
+    }
+  }, [params, setParams, profile?.id]);
+
+  // ----- PlanCard
   const PlanCard = ({
-    plan,
-    title,
-    price,
-    priceStrike,
-    ctaHref,
-    highlight,
-    tagline,
-    bullets,
+    plan, title, price, priceStrike, highlight, tagline, bullets,
+    onCheckout, isLoading, ctaHref,
+    secureNote = 'Secure checkout via Ziina • Cancel anytime',
   }: {
     plan: PlanKey;
     title: string;
     price: string;
     priceStrike?: string;
-    ctaHref: string;
     highlight?: boolean;
     tagline: string;
     bullets: string[];
+    onCheckout?: () => void;
+    isLoading?: boolean;
+    ctaHref?: string;
+    secureNote?: string;
   }) => {
     const isCurrent = plan === currentPlan;
     return (
-      <Card
-        className={
-          highlight
-            ? 'relative border-2 border-amber-400 shadow-lg'
-            : 'relative'
-        }
-      >
+      <Card className={highlight ? 'relative border-2 border-amber-400 shadow-lg' : 'relative'}>
         {highlight && (
           <div className="absolute -top-3 left-1/2 -translate-x-1/2">
             <BadgeUI variant="success" className="px-3">Most Popular</BadgeUI>
@@ -127,9 +155,7 @@ export default function Upgrade() {
               {title}
             </div>
             <div className="text-right">
-              {priceStrike ? (
-                <div className="text-xs text-muted-foreground line-through">{priceStrike}/mo</div>
-              ) : null}
+              {priceStrike ? <div className="text-xs text-muted-foreground line-through">{priceStrike}/mo</div> : null}
               <div className="text-2xl font-bold">
                 {price}<span className="text-sm font-normal text-muted-foreground">/mo</span>
               </div>
@@ -146,7 +172,6 @@ export default function Upgrade() {
               </li>
             ))}
           </ul>
-
           {isCurrent ? (
             <div className="mt-4">
               <Button variant="secondary" className="w-full" disabled>
@@ -162,14 +187,27 @@ export default function Upgrade() {
             </div>
           ) : (
             <div className="mt-4">
-              <Link to={ctaHref}>
-                <Button className="w-full gap-2">
-                  Continue to Checkout <ArrowRight className="h-4 w-4" />
-                </Button>
-              </Link>
-              <div className="mt-2 text-center">
-                <span className="text-xs text-muted-foreground">Secure checkout via Stripe • Cancel anytime</span>
-              </div>
+              {onCheckout ? (
+                <>
+                  <Button className="w-full gap-2" onClick={onCheckout} disabled={!!isLoading}>
+                    {isLoading ? 'Redirecting…' : <>Continue to Checkout <ArrowRight className="h-4 w-4" /></>}
+                  </Button>
+                  <div className="mt-2 text-center">
+                    <span className="text-xs text-muted-foreground">{secureNote}</span>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <Link to={ctaHref || '/signup'}>
+                    <Button className="w-full gap-2">
+                      Continue <ArrowRight className="h-4 w-4" />
+                    </Button>
+                  </Link>
+                  <div className="mt-2 text-center">
+                    <span className="text-xs text-muted-foreground">Create a free account</span>
+                  </div>
+                </>
+              )}
             </div>
           )}
         </CardContent>
@@ -188,6 +226,13 @@ export default function Upgrade() {
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+      {/* Success / cancel flash */}
+      {flashMsg && (
+        <div className="mb-4 rounded-md border bg-emerald-50 px-4 py-2 text-emerald-900 dark:bg-emerald-900/20 dark:text-emerald-100">
+          {flashMsg}
+        </div>
+      )}
+
       {/* Sticky urgency banner */}
       <div className="sticky top-0 z-30 mb-4">
         <div className="rounded-md border bg-amber-50 px-4 py-2 text-amber-900 dark:bg-amber-900/20 dark:text-amber-200 flex items-center justify-between">
@@ -198,11 +243,7 @@ export default function Upgrade() {
           </div>
           <div className="flex items-center gap-3 text-sm">
             <span>Pro: <span className="line-through opacity-70">$8</span> <strong>$6</strong> • Elite: <span className="line-through opacity-70">$40</span> <strong>$30</strong></span>
-            {endsSoon ? (
-              <span className="font-mono">{formatDuration(remainingMs)}</span>
-            ) : (
-              <span className="font-mono">Expired</span>
-            )}
+            {endsSoon ? <span className="font-mono">{formatDuration(remainingMs)}</span> : <span className="font-mono">Expired</span>}
           </div>
         </div>
       </div>
@@ -256,7 +297,6 @@ export default function Upgrade() {
             <div className="relative rounded-md border p-4">
               <p className="text-sm">“{TESTIMONIALS[slide].quote}”</p>
               <div className="mt-2 text-xs text-muted-foreground">— {TESTIMONIALS[slide].name}</div>
-
               <div className="mt-4 flex items-center justify-between">
                 <Button size="sm" variant="secondary" onClick={prev} className="gap-1">
                   <ChevronLeft className="h-4 w-4" /> Prev
@@ -287,20 +327,20 @@ export default function Upgrade() {
           plan="free"
           title="Free"
           price={PLAN_PRICES.free}
-          ctaHref="/signup"
           tagline="Great to try things out, limited for real progress."
           bullets={[
             '25 tutor messages / day',
             'Basic flashcards',
             'Join public StudyArena',
           ]}
+          ctaHref="/signup"
+          secureNote="Create a free account"
         />
         <PlanCard
           plan="pro"
           title="Pro"
           price={PLAN_PRICES.pro}
           priceStrike="$8"
-          ctaHref="/checkout?plan=pro"
           highlight
           tagline="Everything you need to improve every single day."
           bullets={[
@@ -313,13 +353,14 @@ export default function Upgrade() {
             'Clean exports (PDF/Doc/CSV)',
             'Email support',
           ]}
+          onCheckout={() => goToZiina('pro')}
+          isLoading={loadingPlan === 'pro'}
         />
         <PlanCard
           plan="elite"
           title="Elite"
           price={PLAN_PRICES.elite}
           priceStrike="$40"
-          ctaHref="/checkout?plan=elite"
           tagline="The serious advantage for top scores and deadlines."
           bullets={[
             'Unlimited tutor + Priority routing',
@@ -330,6 +371,8 @@ export default function Upgrade() {
             '2× XP events + exclusive flairs',
             'Priority support + 1:1 triage',
           ]}
+          onCheckout={() => goToZiina('elite')}
+          isLoading={loadingPlan === 'elite'}
         />
       </div>
 
@@ -361,16 +404,17 @@ export default function Upgrade() {
 
         {/* Bottom CTAs */}
         <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-          <Link to="/checkout?plan=pro" className="flex-1">
-            <Button className="w-full gap-2">
-              Upgrade to Pro — {PLAN_PRICES.pro}/mo <Rocket className="h-4 w-4" />
-            </Button>
-          </Link>
-          <Link to="/checkout?plan=elite" className="flex-1">
-            <Button variant="secondary" className="w-full gap-2">
-              Go Elite — {PLAN_PRICES.elite}/mo <Crown className="h-4 w-4" />
-            </Button>
-          </Link>
+          <Button className="flex-1 w-full gap-2" onClick={() => goToZiina('pro')} disabled={loadingPlan === 'pro'}>
+            {loadingPlan === 'pro' ? 'Redirecting…' : <>Upgrade to Pro — {PLAN_PRICES.pro}/mo <Rocket className="h-4 w-4" /></>}
+          </Button>
+          <Button
+            variant="secondary"
+            className="flex-1 w-full gap-2"
+            onClick={() => goToZiina('elite')}
+            disabled={loadingPlan === 'elite'}
+          >
+            {loadingPlan === 'elite' ? 'Redirecting…' : <>Go Elite — {PLAN_PRICES.elite}/mo <Crown className="h-4 w-4" /></>}
+          </Button>
         </div>
       </div>
 
@@ -387,7 +431,7 @@ export default function Upgrade() {
             </div>
             <div>
               <div className="font-medium">What if I’m already on Pro?</div>
-              <p className="text-muted-foreground">You can upgrade to Elite instantly—billing prorates via Stripe.</p>
+              <p className="text-muted-foreground">You can upgrade to Elite instantly—billing prorates automatically.</p>
             </div>
             <div>
               <div className="font-medium">Do my existing notes and flashcards carry over?</div>

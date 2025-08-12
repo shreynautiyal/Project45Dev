@@ -17,7 +17,6 @@ import LearnHub from './pages/Learning/LearnHub';
 import Leaderboard from './pages/Leaderboard/Leaderboard';
 import Flashcards from './pages/Flashcards/Flashcards';
 
-import StudyArena from './pages/StudyArena/StudyArena';
 
 // NEW: Socials page (friends + profile hub)
 import Socials from './pages/Profile/Profile';
@@ -151,14 +150,6 @@ export default function App() {
         />
 
         
-        <Route
-          path="/arena"
-          element={
-            <ProtectedRoute>
-              <StudyArena />
-            </ProtectedRoute>
-          }
-        />
 
         {/* Catch-all */}
         <Route path="*" element={<Navigate to="/" replace />} />
