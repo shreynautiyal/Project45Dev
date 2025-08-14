@@ -225,7 +225,7 @@ const Signup: React.FC = () => {
       
 
               <div className="relative z-10 max-w-3xl mx-auto px-4 py-10">
-          <div className="absolute inset-0 bg-gradient-to-br from-white/80 to-white/60 backdrop-blur-sm rounded-3xl"></div>
+          <div className="absolute inset-0 -z-10 bg-gradient-to-br from-white/80 to-white/60 rounded-3xl pointer-events-none"></div>
         <div className="flex items-center justify-between mb-8">
           <Link to="/" className="inline-flex items-center gap-2 text-sm text-neutral-700 hover:text-neutral-900">
             <span className="inline-flex items-center justify-center w-8 h-8 rounded-md border border-neutral-300">45</span>
