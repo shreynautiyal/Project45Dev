@@ -229,7 +229,7 @@ export function Landing() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-white">
       {/* Header */}
       <header className="border-b border-gray-100">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
@@ -253,7 +253,7 @@ export function Landing() {
       </header>
 
       {/* Hero Section */}
-      <section className="relative overflow-hidden bg-gradient-to-br from-blue-50 via-white to-purple-50">
+      <section className="relative overflow-hidden bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50">
         <div className="mx-auto max-w-7xl px-4 py-24 sm:px-6 lg:px-8">
           <div className="text-center">
             <h1 className="mb-6 text-5xl font-bold text-gray-900 md:text-6xl">
@@ -285,7 +285,7 @@ export function Landing() {
               {[
                 { k: '4k+', label: 'Instagram followers' },
                 { k: '2M+', label: 'Total views' },
-                { k: 'Trusted', label: 'by IB students' }
+                { k: 'Trusted', label: 'by thousands of IB students' }
               ].map((s) => (
                 <div
                   key={s.label}
@@ -305,7 +305,7 @@ export function Landing() {
       </section>
 
       {/* Features Section */}
-      <section className="bg-white py-24">
+      <section className="bg-gradient-to-b from-white to-blue-50 py-24">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="mb-16 text-center">
             <h2 className="mb-4 text-4xl font-bold text-gray-900">
@@ -327,7 +327,7 @@ export function Landing() {
                   bgClass="bg-transparent"
                   className="rounded-2xl p-8 text-center"
                 >
-                  <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-r from-blue-500 to-purple-500">
+                  <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 shadow-lg">
                     <Icon className="h-7 w-7 text-white" />
                   </div>
                   <h3 className="mb-3 text-xl font-semibold text-gray-900">{feature.title}</h3>
@@ -340,7 +340,7 @@ export function Landing() {
       </section>
 
       {/* How It Works */}
-      <section className="bg-gray-50 py-24">
+      <section className="bg-gradient-to-br from-purple-50 via-white to-pink-50 py-24">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="mb-16 text-center">
             <h2 className="mb-4 text-4xl font-bold text-gray-900">How Project 45 Works</h2>
@@ -349,7 +349,7 @@ export function Landing() {
 
           <div className="grid gap-8 md:grid-cols-3">
             <div className="text-center">
-              <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full bg-gradient-to-r from-green-500 to-emerald-500">
+              <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full bg-gradient-to-r from-green-500 via-emerald-500 to-teal-500 shadow-lg">
                 <span className="text-xl font-bold text-white">1</span>
               </div>
               <h3 className="mb-3 text-xl font-semibold text-gray-900">Sign Up & Choose Subjects</h3>
@@ -358,7 +358,7 @@ export function Landing() {
               </p>
             </div>
             <div className="text-center">
-              <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full bg-gradient-to-r from-blue-500 to-cyan-500">
+              <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full bg-gradient-to-r from-blue-500 via-cyan-500 to-sky-500 shadow-lg">
                 <span className="text-xl font-bold text-white">2</span>
               </div>
               <h3 className="mb-3 text-xl font-semibold text-gray-900">Study with AI & Flashcards</h3>
@@ -367,7 +367,7 @@ export function Landing() {
               </p>
             </div>
             <div className="text-center">
-              <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full bg-gradient-to-r from-purple-500 to-pink-500">
+              <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full bg-gradient-to-r from-purple-500 via-pink-500 to-rose-500 shadow-lg">
                 <span className="text-xl font-bold text-white">3</span>
               </div>
               <h3 className="mb-3 text-xl font-semibold text-gray-900">Track Progress & Compete</h3>
@@ -380,7 +380,7 @@ export function Landing() {
       </section>
 
       {/* Pricing Section */}
-      <section className="bg-white py-24">
+      <section className="bg-gradient-to-b from-blue-50 to-indigo-50 py-24">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="mb-16 text-center">
             <h2 className="mb-4 text-4xl font-bold text-gray-900">Simple, transparent pricing</h2>
@@ -419,7 +419,7 @@ export function Landing() {
                     ))}
                   </ul>
                   <Link to="/signup">
-                    <Button variant={plan.popular ? 'primary' : 'outline'} className="w-full">
+                    <Button variant={plan.popular ? 'default' : 'outline'} className="w-full">
                       {plan.cta}
                     </Button>
                   </Link>

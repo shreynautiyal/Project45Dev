@@ -31,7 +31,7 @@ const MIN_SUBJECTS = 3;
 /* ----------------------------- UI Bits ----------------------------- */
 
 const StepCard: React.FC<{children: React.ReactNode}> = ({ children }) => (
-  <div className="bg-white rounded-2xl shadow-xl p-8">{children}</div>
+  <div className="bg-gradient-to-br from-white via-purple-50/30 to-pink-50/30 rounded-2xl shadow-xl p-8 border border-white/50">{children}</div>
 );
 
 const StepTitle: React.FC<{title: string; subtitle?: string}> = ({ title, subtitle }) => (
@@ -53,8 +53,8 @@ const SubjectChip: React.FC<{label: string; active: boolean; disabled?: boolean;
     className={[
       'px-3 py-2 rounded-lg text-sm border transition',
       active
-        ? 'bg-neutral-900 text-white border-neutral-900'
-        : `bg-neutral-50 ${disabled ? 'opacity-50 cursor-not-allowed' : 'hover:bg-neutral-100'} border-neutral-200 text-neutral-800`
+        ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white border-purple-600 shadow-md'
+        : `bg-white/80 ${disabled ? 'opacity-50 cursor-not-allowed' : 'hover:bg-purple-50/50'} border-neutral-200 text-neutral-800 hover:border-purple-300`
     ].join(' ')}
   >
     {label}
@@ -66,39 +66,13 @@ const ProgressDots: React.FC<{step: number}> = ({ step }) => (
     {[0,1,2].map(i => (
       <div
         key={i}
-        className={`h-2 rounded-full transition-all ${i <= step ? 'bg-neutral-900 w-8' : 'bg-neutral-200 w-2'}`}
+        className={`h-2 rounded-full transition-all ${i <= step ? 'bg-gradient-to-r from-purple-600 to-pink-600 w-8' : 'bg-neutral-200 w-2'}`}
       />
     ))}
   </div>
 );
 
-/** Subtle floating dots in the background (monochrome) */
-const FloatingDots: React.FC = () => {
-  const dots = Array.from({ length: 18 });
-  return (
-    <div className="pointer-events-none absolute inset-0 overflow-hidden">
-      {dots.map((_, i) => {
-        const size = Math.random() * 6 + 4; // 4–10px
-        const left = Math.random() * 100;
-        const delay = Math.random() * 4;
-        const duration = 8 + Math.random() * 10; // 8–18s
-        const opacity = 0.06 + Math.random() * 0.08;
 
-        return (
-          <motion.span
-            key={i}
-            className="absolute rounded-full bg-neutral-400"
-            style={{ width: size, height: size, left: `${left}%`, top: `${Math.random()*100}%`, opacity }}
-            animate={{ y: [0, -20, 0] }}
-            transition={{ duration, delay, repeat: Infinity, ease: 'easeInOut' }}
-          />
-        );
-      })}
-      {/* Soft vignette edges */}
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(0,0,0,0.02),transparent_60%)]" />
-    </div>
-  );
-};
 
 const container = { initial: { opacity: 0, y: 20 }, animate: { opacity: 1, y: 0 }, exit: { opacity: 0, y: -20 } };
 
@@ -247,10 +221,11 @@ const Signup: React.FC = () => {
   /* ----------------------------- Render ----------------------------- */
 
   return (
-    <div className="relative min-h-screen bg-neutral-50 text-neutral-900">
-      <FloatingDots />
+          <div className="relative min-h-screen bg-gradient-to-br from-purple-50 via-pink-50 to-rose-50 text-neutral-900">
+      
 
-      <div className="relative z-10 max-w-3xl mx-auto px-4 py-10">
+              <div className="relative z-10 max-w-3xl mx-auto px-4 py-10">
+          <div className="absolute inset-0 bg-gradient-to-br from-white/80 to-white/60 backdrop-blur-sm rounded-3xl"></div>
         <div className="flex items-center justify-between mb-8">
           <Link to="/" className="inline-flex items-center gap-2 text-sm text-neutral-700 hover:text-neutral-900">
             <span className="inline-flex items-center justify-center w-8 h-8 rounded-md border border-neutral-300">45</span>
@@ -397,10 +372,10 @@ const Signup: React.FC = () => {
                     <button
                       type="submit"
                       disabled={!canNext0}
-                      className={[
-                        'inline-flex items-center gap-2 px-4 py-2 rounded-lg',
-                        canNext0 ? 'bg-neutral-900 text-white hover:bg-black' : 'bg-neutral-200 text-neutral-500 cursor-not-allowed'
-                      ].join(' ')}
+                                          className={[
+                      'inline-flex items-center gap-2 px-4 py-2 rounded-lg',
+                      canNext0 ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white hover:from-purple-700 hover:to-pink-700 shadow-lg' : 'bg-neutral-200 text-neutral-500 cursor-not-allowed'
+                    ].join(' ')}
                     >
                       Continue
                       <ArrowRight className="w-4 h-4" />
@@ -463,7 +438,7 @@ const Signup: React.FC = () => {
                     disabled={!canNext1}
                     className={[
                       'inline-flex items-center gap-2 px-4 py-2 rounded-lg',
-                      canNext1 ? 'bg-neutral-900 text-white hover:bg-black' : 'bg-neutral-200 text-neutral-500 cursor-not-allowed'
+                      canNext1 ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white hover:from-purple-700 hover:to-pink-700 shadow-lg' : 'bg-neutral-200 text-neutral-500 cursor-not-allowed'
                     ].join(' ')}
                   >
                     Continue
@@ -532,7 +507,7 @@ const Signup: React.FC = () => {
                     disabled={loading}
                     className={[
                       'inline-flex items-center gap-2 px-4 py-2 rounded-lg',
-                      loading ? 'bg-neutral-300 text-neutral-600 cursor-not-allowed' : 'bg-neutral-900 text-white hover:bg-black'
+                      loading ? 'bg-neutral-300 text-neutral-600 cursor-not-allowed' : 'bg-gradient-to-r from-purple-600 to-pink-600 text-white hover:from-purple-700 hover:to-pink-700 shadow-lg'
                     ].join(' ')}
                   >
                     {loading ? 'Creating...' : 'Create account'}

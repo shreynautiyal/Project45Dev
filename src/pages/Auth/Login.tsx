@@ -8,31 +8,7 @@ import toast from 'react-hot-toast';
 
 const emailRegex = /\S+@\S+\.\S+/;
 
-const FloatingDots: React.FC = () => {
-  const dots = useMemo(() => Array.from({ length: 18 }), []);
-  return (
-    <div className="pointer-events-none absolute inset-0 overflow-hidden">
-      {dots.map((_, i) => {
-        const size = Math.random() * 6 + 4; // 4–10px
-        const left = Math.random() * 100;
-        const delay = Math.random() * 4;
-        const duration = 8 + Math.random() * 10; // 8–18s
-        const opacity = 0.06 + Math.random() * 0.08;
 
-        return (
-          <motion.span
-            key={i}
-            className="absolute rounded-full bg-neutral-400"
-            style={{ width: size, height: size, left: `${left}%`, top: `${Math.random()*100}%`, opacity }}
-            animate={{ y: [0, -20, 0] }}
-            transition={{ duration, delay, repeat: Infinity, ease: 'easeInOut' }}
-          />
-        );
-      })}
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(0,0,0,0.02),transparent_60%)]" />
-    </div>
-  );
-};
 
 function mapAuthError(err: unknown) {
   const msg = (err as any)?.message?.toString?.() ?? 'Unexpected error';
@@ -132,8 +108,8 @@ const Login: React.FC = () => {
   };
 
   return (
-    <div className="relative min-h-screen bg-neutral-50 flex items-center justify-center px-4">
-      <FloatingDots />
+          <div className="relative min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 flex items-center justify-center px-4">
+      
 
       <motion.div
         initial={{ opacity: 0, y: 20 }}
@@ -141,7 +117,7 @@ const Login: React.FC = () => {
         transition={{ duration: 0.6 }}
         className="relative z-10 max-w-md w-full"
       >
-        <div className="bg-white rounded-2xl shadow-xl p-8">
+        <div className="bg-gradient-to-br from-white via-blue-50/30 to-indigo-50/30 rounded-2xl shadow-xl p-8 border border-white/50">
           <div className="text-center mb-8">
             {/* Monochrome emblem (no gradient) */}
             <div className="w-16 h-16 bg-white border border-neutral-200 rounded-xl flex items-center justify-center text-neutral-900 text-2xl font-bold mx-auto mb-4">

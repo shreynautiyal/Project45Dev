@@ -37,10 +37,11 @@ const FEATURES = [
 ] as const;
 
 const TESTIMONIALS = [
-  { quote: 'Pro removed the ceiling. My essays jumped a band in two weeks.', name: 'Amirah, IB Eng LangLit SL' },
-  { quote: 'Elite analytics showed me exactly why I was stuck at 6s in Paper 1.', name: 'Leo, IB Year 13' },
-  { quote: 'StudyArena + Pomodoro turned 4h of chaos into 2.5h of real work.', name: 'Sofia, HL Maths AA' },
-  { quote: 'Unlimited marking with actionable edits… It’s like having a coach.', name: 'Ravi, TOK' },
+  { quote: 'Pro removed the ceiling. My essays jumped a band in two weeks.', name: 'Arjun, IB Year 13' },
+  { quote: 'Elite analytics showed me exactly why I was stuck at 6s in Paper 1.', name: 'Rashid, IB Year 12' },
+  { quote: 'Adding Greek HL and Econ HL would be a game-changer. Project 45 is absolutely incredible - the AI tutor helped me understand complex concepts in minutes.', name: 'Asha, IB Year 13' },
+  { quote: 'StudyArena + Pomodoro turned 4h of chaos into 2.5h of real work.', name: 'Ayaan, IB Year 12' },
+  { quote: 'Unlimited marking with actionable edits… It\'s like having a coach.', name: 'Rishi, IB Year 13' },
 ];
 
 function Check({ on = true }: { on?: boolean }) {
@@ -142,10 +143,10 @@ export default function Upgrade() {
   }) => {
     const isCurrent = plan === currentPlan;
     return (
-      <Card className={highlight ? 'relative border-2 border-amber-400 shadow-lg' : 'relative'}>
+      <Card className={`${highlight ? 'relative border-2 border-amber-400 shadow-xl scale-105' : 'relative'} transition-all duration-300 hover:shadow-lg hover:-translate-y-1`}>
         {highlight && (
           <div className="absolute -top-3 left-1/2 -translate-x-1/2">
-            <BadgeUI variant="success" className="px-3">Most Popular</BadgeUI>
+            <BadgeUI variant="default" className="px-3 bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 text-white shadow-lg">Most Popular</BadgeUI>
           </div>
         )}
         <CardHeader>
@@ -225,7 +226,8 @@ export default function Upgrade() {
   const next = () => setSlide((s) => (s + 1) % TESTIMONIALS.length);
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+    <div className="min-h-screen">
+      <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
       {/* Success / cancel flash */}
       {flashMsg && (
         <div className="mb-4 rounded-md border bg-emerald-50 px-4 py-2 text-emerald-900 dark:bg-emerald-900/20 dark:text-emerald-100">
@@ -234,16 +236,29 @@ export default function Upgrade() {
       )}
 
       {/* Sticky urgency banner */}
-      <div className="sticky top-0 z-30 mb-4">
-        <div className="rounded-md border bg-amber-50 px-4 py-2 text-amber-900 dark:bg-amber-900/20 dark:text-amber-200 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Timer className="h-4 w-4" />
-            <span className="font-medium">Limited-time upgrade bonus</span>
-            <BadgeUI variant="warning">Ends soon</BadgeUI>
-          </div>
-          <div className="flex items-center gap-3 text-sm">
-            <span>Pro: <span className="line-through opacity-70">$8</span> <strong>$6</strong> • Elite: <span className="line-through opacity-70">$40</span> <strong>$30</strong></span>
-            {endsSoon ? <span className="font-mono">{formatDuration(remainingMs)}</span> : <span className="font-mono">Expired</span>}
+      <div className="sticky top-0 z-30 mb-6">
+        <div className="rounded-xl border-0 bg-gradient-to-r from-amber-400 via-orange-400 to-red-400 p-1 shadow-lg">
+          <div className="rounded-lg bg-white px-6 py-4 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-full bg-gradient-to-r from-amber-500 to-orange-500">
+                <Timer className="h-5 w-5 text-white" />
+              </div>
+              <div>
+                <span className="font-semibold text-gray-900">Limited-time upgrade bonus</span>
+                <BadgeUI variant="destructive" className="ml-3 bg-orange-500 hover:bg-orange-600">Ends soon</BadgeUI>
+              </div>
+            </div>
+            <div className="flex items-center gap-4 text-sm">
+              <div className="text-center">
+                <span className="text-gray-600">Pro: <span className="line-through opacity-70">$8</span> <strong className="text-2xl text-green-600">$6</strong></span>
+              </div>
+              <div className="text-center">
+                <span className="text-gray-600">Elite: <span className="line-through opacity-70">$40</span> <strong className="text-2xl text-green-600">$30</strong></span>
+              </div>
+              <div className="bg-gradient-to-r from-red-500 to-orange-500 text-white px-4 py-2 rounded-lg font-mono font-bold">
+                {endsSoon ? formatDuration(remainingMs) : 'Expired'}
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -256,7 +271,7 @@ export default function Upgrade() {
         >
           <ArrowLeft className="h-4 w-4" /> Back
         </button>
-        <BadgeUI variant="info" className="flex items-center gap-2">
+        <BadgeUI variant="default" className="flex items-center gap-2 bg-blue-500 hover:bg-blue-600">
           <ShieldCheck className="h-4 w-4" /> Money-safe: cancel anytime
         </BadgeUI>
       </div>
@@ -264,22 +279,34 @@ export default function Upgrade() {
       {/* Hero */}
       <div className="mb-10 grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
-          <h1 className="text-3xl font-bold tracking-tight">Upgrade your study stack.</h1>
-          <p className="mt-2 text-muted-foreground">
+          <div className="bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 bg-clip-text">
+            <h1 className="text-4xl font-bold tracking-tight text-transparent">Upgrade your study stack.</h1>
+          </div>
+          <p className="mt-4 text-lg text-gray-700 leading-relaxed">
             Free is a taste. <strong>Pro</strong> gives you the daily tools you’ll actually use.
             <strong> Elite</strong> turns your prep into a machine—priority marking, unlimited tutor time,
             VIP StudyArena, and analytics that show exactly where to push next.
           </p>
 
           {/* Why section */}
-          <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
-            <div className="rounded-lg border p-4">
-              <div className="mb-2 flex items-center gap-2 font-medium"><Zap className="h-4 w-4" /> Go faster, daily</div>
-              <p className="text-sm text-muted-foreground">Unlimited tutor messages and serious review tools. Stop waiting, start shipping progress.</p>
+          <div className="mt-8 grid grid-cols-1 gap-6 sm:grid-cols-3">
+            <div className="rounded-xl border-0 bg-gradient-to-br from-blue-50 to-indigo-100 p-6 shadow-lg hover:shadow-xl transition-all duration-300">
+              <div className="mb-3 flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-gradient-to-r from-blue-500 to-indigo-500">
+                  <Zap className="h-5 w-5 text-white" />
+                </div>
+                <div className="font-semibold text-blue-900">Go faster, daily</div>
+              </div>
+              <p className="text-sm text-blue-800 leading-relaxed">Unlimited tutor messages and serious review tools. Stop waiting, start shipping progress.</p>
             </div>
-            <div className="rounded-lg border p-4">
-              <div className="mb-2 flex items-center gap-2 font-medium"><Trophy className="h-4 w-4" /> Marking that matters</div>
-              <p className="text-sm text-muted-foreground">Full rubric breakdowns with actionable edits—so you fix what actually costs marks.</p>
+            <div className="rounded-xl border-0 bg-gradient-to-br from-green-50 to-emerald-100 p-6 shadow-lg hover:shadow-xl transition-all duration-300">
+              <div className="mb-3 flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-gradient-to-r from-green-500 to-emerald-500">
+                  <Trophy className="h-5 w-5 text-white" />
+                </div>
+                <div className="font-semibold text-green-900">Marking that matters</div>
+              </div>
+              <p className="text-sm text-green-800 leading-relaxed">Full rubric breakdowns with actionable edits—so you fix what actually costs marks.</p>
             </div>
             <div className="rounded-lg border p-4">
               <div className="mb-2 flex items-center gap-2 font-medium"><Sparkles className="h-4 w-4" /> Elite edge</div>
@@ -289,7 +316,7 @@ export default function Upgrade() {
         </div>
 
         {/* Testimonials card with carousel */}
-        <Card className="h-full">
+        <Card className="h-full border-0 shadow-xl bg-gradient-to-br from-white to-blue-50">
           <CardHeader>
             <CardTitle className="flex items-center gap-2"><Headphones className="h-5 w-5" /> Students say</CardTitle>
           </CardHeader>
@@ -377,11 +404,11 @@ export default function Upgrade() {
       </div>
 
       {/* Feature comparison table */}
-      <div className="mt-10">
-        <h2 className="text-xl font-semibold">What you actually get</h2>
-        <div className="mt-4 overflow-x-auto rounded-lg border">
+      <div className="mt-12">
+        <h2 className="text-2xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent mb-6">What you actually get</h2>
+        <div className="mt-6 overflow-x-auto rounded-xl border-0 bg-gradient-to-br from-white to-gray-50 shadow-lg">
           <table className="w-full text-sm">
-            <thead className="bg-muted/50">
+            <thead className="bg-gradient-to-r from-blue-50 to-indigo-50">
               <tr>
                 <th className="px-4 py-3 text-left">Feature</th>
                 <th className="px-4 py-3 text-left">Free</th>
@@ -403,13 +430,17 @@ export default function Upgrade() {
         </div>
 
         {/* Bottom CTAs */}
-        <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-          <Button className="flex-1 w-full gap-2" onClick={() => goToZiina('pro')} disabled={loadingPlan === 'pro'}>
+        <div className="mt-8 flex flex-col gap-4 sm:flex-row">
+          <Button 
+            className="flex-1 w-full gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 shadow-lg text-white" 
+            onClick={() => goToZiina('pro')} 
+            disabled={loadingPlan === 'pro'}
+          >
             {loadingPlan === 'pro' ? 'Redirecting…' : <>Upgrade to Pro — {PLAN_PRICES.pro}/mo <Rocket className="h-4 w-4" /></>}
           </Button>
           <Button
             variant="secondary"
-            className="flex-1 w-full gap-2"
+            className="flex-1 w-full gap-2 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 shadow-lg text-white"
             onClick={() => goToZiina('elite')}
             disabled={loadingPlan === 'elite'}
           >
@@ -449,6 +480,7 @@ export default function Upgrade() {
             Meanwhile, Pro and Elite give you everything Free doesn’t—so you can stop rationing messages and finally focus on results.
           </CardContent>
         </Card>
+      </div>
       </div>
     </div>
   );

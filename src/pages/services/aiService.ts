@@ -188,6 +188,7 @@ Tu es un tuteur IB French A (HL).
     'Practice': 'Create 5 questions from easy→hard with short answers.',
     'Exam-Style': 'Create 3 exam-style questions with marks and concise model answers.',
     'Marking': 'Mark with IB rubric. Be specific, banded, and evidence-based.',
+    'Past Papers Mode': 'You are now in PAST PAPERS MODE. When users ask for past papers, search online for real IB past paper questions from official sources, question banks, or educational websites. Provide text-only questions (avoid diagrams/images/graphs). Include source attribution when possible. Focus on recent IB syllabi.',
     'Proof Sketch': 'Outline key lemmas/ideas; keep it tight.',
     'CAS Tips': 'Show calculator approaches + common pitfalls.',
     'Close Analysis': 'Zoom into language, technique, effect. Quote short evidence.',
@@ -276,8 +277,13 @@ Tu es un tuteur IB French A (HL).
   /* =========================
      System prompt builders
   ========================= */
-  private buildSystemPrompt(subject: string, mode?: string, language?: string, _opts?: ChatOptions, ragCitations?: string[]): string {
+  private buildSystemPrompt(subject: string, mode?: string, language?: string, opts?: ChatOptions, ragCitations?: string[]): string {
     const base = this.getSubjectPrime(subject);
+
+    // Include level and course context in the system prompt
+    const levelContext = opts?.level ? `\n\nYou are teaching ${subject} at ${opts.level} level.` : '';
+    const courseContext = opts?.course ? `\n\nCourse: ${opts.course}` : '';
+    const fullSubjectContext = `${base}${levelContext}${courseContext}`;
 
     const modeHint = mode && this.MODE_HINTS[mode]
       ? `\n\nCurrent focus: ${mode}. ${this.MODE_HINTS[mode]}`
@@ -301,7 +307,7 @@ IMPORTANT CONVERSATION RULES:
       if (this.isSpanishSubject(subject)) {
         languageInstruction = `\n\nResponde en español natural. Si solo te saludan, responde breve (p. ej., "¡Hola! ¿En qué puedo ayudarte hoy?").`;
       } else if (this.isFrenchSubject(subject)) {
-        languageInstruction = `\n\nRéponds en français naturellement. Si c’est juste un salut, réponds brièvement (ex: "Salut ! Je peux t’aider avec quoi aujourd’hui ?").`;
+        languageInstruction = `\n\nRéponds en français naturellement. Si c'est juste un salut, réponds brièvement (ex: "Salut ! Je peux t'aider avec quoi aujourd'hui ?").`;
       }
     } else if (lang && lang !== 'en') {
       languageInstruction = `\n\nRespond in ${lang} naturally and conversationally.`;
@@ -311,7 +317,9 @@ IMPORTANT CONVERSATION RULES:
       ? `\n\nUse the provided context when relevant and include short citations like [${ragCitations.map((_, i) => i + 1).join(', ')}].`
       : '';
 
-    return [base, modeHint, conversationRules, languageInstruction, ragNote].join('\n');
+    // Prevent image/diagram-demanding tasks when generating past papers
+    const visualsGuard = `\nDo not ask for or require images/diagrams/graphs. If a question would require a visual, replace it with a textual alternative or skip.`;
+    return [fullSubjectContext, modeHint, conversationRules + visualsGuard, languageInstruction, ragNote].join('\n');
   }
 
   private buildMarkingSystemPrompt(type: string, subject?: string, paperType?: string) {
@@ -701,8 +709,15 @@ ${exemplarBlock}${userPatterns}${lang}
       ? `\n\nCONTEXT (use only if relevant; cite like [1], [2]):\n${ragBlock}\n\nWhen you use a fact from context, add a short citation at the end of that sentence.`
       : '';
 
+    // When user requests past papers, prefer textual-only banks and avoid visual questions
+    const isPastPapers = /\b(past\s*paper|ppq|question\s*bank|past\s*questions)\b/i.test(lastUser);
+    let bankNote = '';
+    if (isPastPapers) {
+      bankNote = `\n\nRULES FOR PAST PAPERS MODE:\n- Only generate textual questions (no diagrams/images/graphs).\n- Prefer topics that can be fully expressed in text.\n- If needed, adapt any visual-heavy question into a purely textual variant.\n`;
+    }
+
     const fullMessages: ChatMessage[] = [
-      { role: 'system', content: system },
+      { role: 'system', content: system + bankNote },
       ...(ragBlock ? [{ role: 'system', content: instructionForCitations }] as ChatMessage[] : []),
       ...context,
     ];

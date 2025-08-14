@@ -1,5 +1,5 @@
 // src/pages/Learning/LearnHub.tsx
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Send, Bot, BookOpen, ChevronUp, Flame, Trophy, Zap,
@@ -101,6 +101,7 @@ const SLASH_COMMANDS = [
   { key: '/rubric',    label: 'Insert rubric',          hint: 'Subject + Paper rubric',             icon: <FileText className="w-4 h-4" /> },
   { key: '/plan',      label: 'Revision plan',          hint: 'SMART plan by topic + time',         icon: <LayoutList className="w-4 h-4" /> },
   { key: '/pastpaper', label: 'Past paper style',       hint: 'Exam-style Qs + marks',              icon: <GraduationCap className="w-4 h-4" /> },
+  { key: '/pastpapers', label: 'Past Papers Mode',      hint: 'Get real past papers from internet', icon: <Crown className="w-4 h-4" /> },
 ] as const;
 type SlashKey = typeof SLASH_COMMANDS[number]['key'];
 
@@ -108,140 +109,15 @@ type SlashKey = typeof SLASH_COMMANDS[number]['key'];
    Subject-aware intent helpers
 =========================== */
 
-// Minimal IB topic maps (extend anytime)
-const TOPIC_MAPS = {
-  math: {
-    1: 'Number & Algebra',
-    2: 'Functions',
-    3: 'Trigonometry',
-    4: 'Vectors',
-    5: 'Statistics & Probability',
-    6: 'Calculus',
-  },
-  physics: {
-    1: 'Measurements & Uncertainties',
-    2: 'Mechanics',
-    3: 'Thermal Physics',
-    4: 'Waves',
-    5: 'Electricity & Magnetism',
-    6: 'Circular Motion & Gravitation',
-    7: 'Atomic, Nuclear & Particle Physics',
-  },
-  chemistry: {
-    1: 'Stoichiometric Relationships',
-    2: 'Atomic Structure',
-    3: 'Periodicity',
-    4: 'Chemical Bonding & Structure',
-    5: 'Energetics/Thermochemistry',
-    6: 'Chemical Kinetics',
-  },
-  biology: {
-    1: 'Cell Biology',
-    2: 'Molecular Biology',
-    3: 'Genetics',
-    4: 'Ecology',
-    5: 'Evolution & Biodiversity',
-    6: 'Human Physiology',
-  },
-  economics: {
-    1: 'Microeconomics',
-    2: 'Macroeconomics',
-    3: 'International Economics',
-    4: 'Development Economics',
-  },
-};
+// (Removed old topic scaffolding helpers to keep messages clean)
 
-const subjectKey = (name?: string) => {
-  const s = (name || '').toLowerCase();
-  if (/math/.test(s)) return 'math';
-  if (/phys/.test(s)) return 'physics';
-  if (/chem/.test(s)) return 'chemistry';
-  if (/bio/.test(s)) return 'biology';
-  if (/econ/.test(s)) return 'economics';
-  if (/english/.test(s)) return 'english';
-  if (/spanish|español/.test(s)) return 'spanish';
-  if (/french|français/.test(s)) return 'french';
-  return 'other';
-};
-
-const extractTopicNumber = (text: string): number | null => {
-  const m = text.toLowerCase().match(/topic\s*(\d{1,2})/);
-  if (!m) return null;
-  const n = parseInt(m[1], 10);
-  if (Number.isNaN(n)) return null;
-  return n;
-};
-
-const addLanguagePedagogyHint = (subjName: string, content: string) => {
-  // Teach in English, but with French/Spanish style terminology/method.
-  if (/spanish|español/i.test(subjName)) {
-    return `Teach in English but follow Spanish classroom style and terminology where appropriate (you may mix as helpful). Use brief English explanations.\n\n${content}`;
-  }
-  if (/french|français/i.test(subjName)) {
-    return `Teach in English but follow French classroom style and terminology where appropriate (you may mix as helpful). Use brief English explanations.\n\n${content}`;
-  }
-  return content;
-};
-
-const specializePrompt = (subj: Subject | null, raw: string, level: Level, course?: Course) => {
-  if (!subj) return raw;
-
-  let content = raw.trim();
-  const key = subjectKey(subj.name);
-
-  // Add language pedagogy hint for FR/ES subjects
-  content = addLanguagePedagogyHint(subj.name, content);
-
-  // If user referenced "topic X", map to syllabus
-  const topicNum = extractTopicNumber(content);
-  if (topicNum) {
-    const map = (TOPIC_MAPS as any)[key];
-    const topicName = map?.[topicNum];
-    if (topicName) {
-      // Promote to exam/practice intent if they said "questions"
-      const wantsQuestions = /\b(question|questions|practice|ppq|past paper|exam)\b/i.test(content);
-      const promptIntent = wantsQuestions ? 'Generate exam-style practice (with marks and concise markscheme).' : 'Explain thoroughly with worked examples.';
-      const courseTag = isLanguageSubject(subj.name) && course ? ` (${course})` : '';
-      return `[${level}] ${subj.name}${courseTag} — ${key === 'economics' ? 'Syllabus' : 'Topic'} ${topicNum}: ${topicName}.
-${promptIntent}
-Original ask: ${raw}`;
-    }
-  }
-
-  // If they say "send me questions" without topic #, still smart-default to exam style
-  if (/\b(question|questions|practice|ppq|past paper|exam)\b/i.test(content)) {
-    return `[${level}] ${subj.name}${isLanguageSubject(subj.name) && course ? ` (${course})` : ''} — Generate 3 exam-style questions with marks and concise markscheme, targeted to the user’s request.
-Original ask: ${raw}`;
-  }
-
-  // Otherwise pass through with light subject scaffolding
-  return `[${level}] ${subj.name}${isLanguageSubject(subj.name) && course ? ` (${course})` : ''} — Respond IB-appropriately.
-${content}`;
-};
+// Note: previously injected subject/level text into the user's message.
+// We now keep user messages clean and pass context via options/system prompt.
 
 /* ===========================
    Component
 =========================== */
-const MODE_PROMPTS: Record<string, string> = {
-  Explain: 'Explain this concept clearly like an IB tutor. Include definitions, the “why”, and 1–2 classic traps.',
-  'Worked Example': 'Give a fully worked example with step-by-step reasoning and common mistakes.',
-  Practice: 'Give 5 practice questions (easy→hard) with brief answers. Separate by level and include quick feedback.',
-  'Exam-Style': 'Generate 3 exam-style questions with marks per step and concise markscheme answers.',
-  Marking: 'Mark this response using the official IB rubric. Give band, marks, and targeted improvements.',
-  'Proof Sketch': 'Provide a proof sketch and the intuition behind it in IB-appropriate rigor.',
-  'CAS Tips': 'Suggest how to approach this with a graphing calculator/CAS and show pitfalls.',
-  'Close Analysis': 'Do a close analysis of language and structure, identifying devices and effects.',
-  'Paper 1': 'Paper 1: Help me plan a commentary with hook, thesis, paragraph ideas, and key devices.',
-  'Paper 2': 'Paper 2: Build a comparative plan with thematic throughline and quotes.',
-  Diagrams: 'Explain with the standard IB Economics diagrams and correct axes/labels.',
-  Derive: 'Derive the key formula and explain assumptions and where it breaks.',
-  Mechanism: 'Show the mechanism with steps, intermediates, and conditions.',
-  Calculations: 'Give calculation drills with units and sig figs.',
-  'Pathway Map': 'Map the biological pathway/process with checkpoints and regulation.',
-  'Vocab Drill': 'Drill vocab with spaced repetition style, topic-based, include sample sentences.',
-  Roleplay: 'Roleplay a conversation at this level and correct me kindly.',
-  Writing: 'Give me a writing prompt, outline, and a band-graded sample.',
-};
+// no-op placeholder (modes handled silently)
 
 const LearnHub: React.FC = () => {
   const { user, profile } = useAuthStore();
@@ -357,6 +233,18 @@ const LearnHub: React.FC = () => {
   useEffect(() => {
     if (course) localStorage.setItem(STORAGE_COURSE_KEY, course);
   }, [course]);
+
+  // Per-subject HL/SL memory
+  useEffect(() => {
+    if (!selectedSubject?.id) return;
+    const per = localStorage.getItem(`lh.level.${selectedSubject.id}`) as Level | null;
+    if (per && per !== level) setLevel(per);
+  }, [selectedSubject?.id]);
+
+  useEffect(() => {
+    if (!selectedSubject?.id) return;
+    localStorage.setItem(`lh.level.${selectedSubject.id}`, level);
+  }, [level, selectedSubject?.id]);
 
   // When subject changes, set default Course if it's a language
   useEffect(() => {
@@ -653,7 +541,7 @@ const LearnHub: React.FC = () => {
     /^(\s*(hi|hello|hey|hola|buenas|salut|qué tal)\s*[!.]?\s*){1,3}$/i.test(s);
 
   const handleSendMessage = async () => {
-    const content = newMessage.trim();
+    let content = newMessage.trim();
     if (!content || loading || !selectedSubject?.name) return;
 
     // Redirects for marking / long answers
@@ -671,28 +559,31 @@ const LearnHub: React.FC = () => {
 
     // Instant human-y greeting
     if (isGreeting(content)) {
-      const s = selectedSubject.name.toLowerCase();
-      const quick =
-        /spanish|español/.test(s) ? '¡Hola! ¿En qué puedo ayudarte hoy?' :
-        /french|français/.test(s) ? 'Salut ! Je peux t’aider avec quoi aujourd’hui ?' :
-        'Hey! What are we tackling today?';
+      // Just send the greeting to the AI normally
+      // The AI will respond naturally with the subject context it already knows
+    }
 
-      const userMessage: ChatMessage = { role: 'user', content };
-      const assistantMessage: ChatMessage = { role: 'assistant', content: quick };
-      const final = [...messages, userMessage, assistantMessage];
-      setMessages(final);
-      setNewMessage('');
-      await saveChatHistory(final);
-      return;
+    // Optional: leading slash command maps to mode, strip from message (silent)
+    const token = content.trimStart().split(/\s+/)[0].toLowerCase();
+    const slashMap: Record<string, string> = {
+      '/explain': 'Explain',
+      '/example': 'Worked Example',
+      '/practice': 'Practice',
+      '/pastpaper': 'Exam-Style',
+      '/mark': 'Marking',
+      '/pastpapers': 'Past Papers Mode',
+    };
+    if (slashMap[token]) {
+      if (tier !== 'free') setActiveMode(slashMap[token]);
+      else openUpgrade('Modes are a Pro/Elite feature.');
+      content = content.replace(/^\s*\/\w+\s*/i, '');
     }
 
     const ok = await beforeSendRateChecks();
     if (!ok) return;
 
-    // 🔎 Subject-aware specialization
-    const specialized = specializePrompt(selectedSubject, content, level, course);
-
-    const userMessage: ChatMessage = { role: 'user', content: specialized };
+    // Keep user message clean (no subject/level/mode injection)
+    const userMessage: ChatMessage = { role: 'user', content };
     const updatedMessages = [...messages, userMessage];
 
     setMessages(updatedMessages);
@@ -778,10 +669,9 @@ const LearnHub: React.FC = () => {
   };
 
   const insertModePrompt = (mode: string) => {
-    const base = MODE_PROMPTS[mode] || 'Explain like an IB tutor.';
-    const withLvl = `[${level}] ${base}`;
-    setNewMessage(withLvl + '\n\n');
+    if (tier === 'free') { openUpgrade('Modes are a Pro/Elite feature.'); return; }
     setActiveMode(mode);
+    toast.success(`${mode} mode enabled`);
   };
 
   const insertRubric = () => {
@@ -839,7 +729,7 @@ Provide band, marks, and 2–3 actionable improvements.
     return (
       <div className="fixed inset-0 flex items-center justify-center bg-white px-4">
         <div className="max-w-lg w-full text-center">
-          <div className="w-14 h-14 rounded-xl bg-neutral-100 text-neutral-800 flex items-center justify-center mx-auto mb-4">
+          <div className="w-14 h-14 rounded-xl bg-neutral-200 text-neutral-800 flex items-center justify-center mx-auto mb-4">
             <AlertTriangle className="w-7 h-7" />
           </div>
           <h2 className="text-xl font-bold mb-2 text-neutral-900">Finish setup to continue</h2>
@@ -898,17 +788,17 @@ Provide band, marks, and 2–3 actionable improvements.
           )}
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-xs px-2 py-1 rounded-full bg-neutral-100 text-neutral-800 hidden sm:inline-flex items-center gap-1">
+          <span className="text-xs px-2 py-1 rounded-full bg-neutral-200 text-neutral-900 hidden sm:inline-flex items-center gap-1">
             <ShieldCheck className="w-3 h-3" /> {tier.toUpperCase()}
           </span>
-          <span className="text-xs px-2 py-1 rounded-full bg-neutral-100 text-neutral-800 hidden md:inline-flex items-center gap-1" title="Burst messages per minute">
+          <span className="text-xs px-2 py-1 rounded-full bg-neutral-200 text-neutral-900 hidden md:inline-flex items-center gap-1" title="Burst messages per minute">
             <Clock className="w-3 h-3" /> {minuteCount}/{minuteCap} /min
           </span>
-          <span className="text-xs px-2 py-1 rounded-full bg-neutral-100 text-neutral-800 hidden md:inline-flex items-center gap-1" title="Daily usage">
+          <span className="text-xs px-2 py-1 rounded-full bg-neutral-200 text-neutral-900 hidden md:inline-flex items-center gap-1" title="Daily usage">
             <Zap className="w-3 h-3" /> {dailyCount}/{tierCap} today • {messagesLeft} left
           </span>
           {cooldown && (
-            <span className="text-xs px-2 py-1 rounded-full bg-neutral-100 text-neutral-800 flex items-center gap-1" title="Rate limit cooldown">
+            <span className="text-xs px-2 py-1 rounded-full bg-neutral-200 text-neutral-900 flex items-center gap-1" title="Rate limit cooldown">
               <AlertTriangle className="w-3 h-3" /> {cooldown}s
             </span>
           )}
@@ -940,8 +830,8 @@ Provide band, marks, and 2–3 actionable improvements.
                   key={s.id}
                   whileHover={{ scale: 1.01 }} whileTap={{ scale: 0.99 }}
                   onClick={() => setSelectedSubject(s)}
-                  className={`w-full text-left px-3 py-2.5 rounded-lg transition-colors ${
-                    selectedSubject?.id === s.id ? 'bg-neutral-900 text-white' : 'hover:bg-neutral-50 text-neutral-900'
+                  className={`w-full text-left px-3 py-2.5 rounded-lg transition-colors border ${
+                    selectedSubject?.id === s.id ? 'bg-neutral-200 text-neutral-900 border-neutral-300' : 'hover:bg-neutral-50 text-neutral-900 border-transparent'
                   }`}
                   aria-pressed={selectedSubject?.id === s.id}
                   title={s.name}
@@ -965,7 +855,7 @@ Provide band, marks, and 2–3 actionable improvements.
                     <button
                       key={l}
                       onClick={() => setLevel(l)}
-                      className={`px-3 py-2 rounded-lg border text-sm ${level===l ? 'bg-neutral-900 text-white border-neutral-900' : 'hover:bg-neutral-50'}`}
+                      className={`px-3 py-2 rounded-lg border text-sm ${level===l ? 'bg-neutral-200 text-neutral-900 border-neutral-300' : 'hover:bg-neutral-50'}`}
                       aria-pressed={level===l}
                     >
                       {l}
@@ -985,7 +875,7 @@ Provide band, marks, and 2–3 actionable improvements.
                       <button
                         key={c}
                         onClick={() => setCourse(c)}
-                        className={`px-3 py-2 rounded-lg border text-sm ${course===c ? 'bg-neutral-900 text-white border-neutral-900' : 'hover:bg-neutral-50'}`}
+                        className={`px-3 py-2 rounded-lg border text-sm ${course===c ? 'bg-neutral-200 text-neutral-900 border-neutral-300' : 'hover:bg-neutral-50'}`}
                         aria-pressed={course===c}
                       >
                         {c}
@@ -1016,13 +906,27 @@ Provide band, marks, and 2–3 actionable improvements.
                       key={mode}
                       onClick={() => insertModePrompt(mode)}
                       className={`text-xs px-2.5 py-1.5 rounded-full border ${
-                        activeMode === mode ? 'bg-neutral-100 border-neutral-300 text-neutral-900' : 'hover:bg-neutral-50'
+                        activeMode === mode ? 'bg-neutral-200 border-neutral-300 text-neutral-900' : 'hover:bg-neutral-50'
                       }`}
                       title={`Switch to ${mode}`}
                     >
                       {mode}
                     </button>
                   ))}
+                  
+                  {/* Past Papers Mode - Pro/Elite only */}
+                  {tier !== 'free' && (
+                    <button
+                      onClick={() => insertModePrompt('Past Papers Mode')}
+                      className={`text-xs px-2.5 py-1.5 rounded-full border ${
+                        activeMode === 'Past Papers Mode' ? 'bg-gradient-to-r from-purple-500 to-pink-500 text-white border-purple-500' : 'hover:bg-neutral-50'
+                      }`}
+                      title="Past Papers Mode - Get real past papers from internet (Pro/Elite only)"
+                    >
+                      <Crown className="w-3 h-3 inline mr-1" />
+                      Past Papers
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -1049,20 +953,20 @@ Provide band, marks, and 2–3 actionable improvements.
                   <div>
                     <h3 className="text-lg font-bold text-neutral-900">{selectedSubject.name} — {level} AI Tutor</h3>
                     <p className="text-neutral-600 text-xs sm:text-sm">
-                      Ask anything. Use <code className="px-1 rounded bg-neutral-100">/</code> for commands.
+                     Ask anything. Use <code className="px-1 rounded bg-neutral-200">/</code> for commands.
                       {isMathSubject(selectedSubject?.name) ? ' Need math? Just type it out as you would normally!' : ''}
                     </p>
                   </div>
                 </div>
                 <div className="hidden sm:flex items-center gap-2 text-xs text-neutral-800">
                   {isLanguageSubject(selectedSubject?.name) && course && (
-                    <span className="px-2 py-1 rounded-full bg-neutral-900 text-white">Course: {course}</span>
+                    <span className="px-2 py-1 rounded-full bg-neutral-200 text-neutral-900 border border-neutral-300">Course: {course}</span>
                   )}
-                  <span className="px-2 py-1 rounded-full bg-neutral-900 text-white">Level: {level}</span>
-                  <span className="px-2 py-1 rounded-full bg-neutral-100 flex items-center gap-1" title="Streak days">
+                  <span className="px-2 py-1 rounded-full bg-neutral-200 text-neutral-900 border border-neutral-300">Level: {level}</span>
+                  <span className="px-2 py-1 rounded-full bg-neutral-200 flex items-center gap-1" title="Streak days">
                     <Flame className="w-3 h-3" /> {streak}d
                   </span>
-                  <span className="px-2 py-1 rounded-full bg-neutral-100 flex items-center gap-1" title="Total XP">
+                  <span className="px-2 py-1 rounded-full bg-neutral-200 flex items-center gap-1" title="Total XP">
                     <Trophy className="w-3 h-3" /> {profile?.xp ?? 0}
                   </span>
                 </div>
@@ -1161,7 +1065,27 @@ Provide band, marks, and 2–3 actionable improvements.
                     {filteredCommands.map((c) => (
                       <button
                         key={c.key}
-                        onClick={() => { setNewMessage(`${c.key} `); setPalettePinned(true); setShowCommands(true); }}
+                        onClick={() => {
+                          const map: Record<string, string> = {
+                            '/explain': 'Explain',
+                            '/example': 'Worked Example',
+                            '/practice': 'Practice',
+                            '/pastpaper': 'Exam-Style',
+                            '/mark': 'Marking',
+                          };
+                          if (c.key === '/rubric') {
+                            insertRubric();
+                            setShowCommands(false);
+                            setPalettePinned(false);
+                          } else if (map[c.key]) {
+                            insertModePrompt(map[c.key]);
+                            setShowCommands(false);
+                            setPalettePinned(false);
+                          } else {
+                            setShowCommands(false);
+                            setPalettePinned(false);
+                          }
+                        }}
                         className="text-left text-sm rounded-md px-3 py-2 border hover:bg-neutral-50 flex items-start gap-2"
                       >
                         <span className="mt-0.5">{c.icon}</span>
@@ -1286,12 +1210,12 @@ const MessageBubble: React.FC<{
   onRegenerate?: () => void;
   userAvatar?: string;
   userName?: string;
-}> = React.memo(({ m, i, onRegenerate, userAvatar, userName }) => {
+}> = React.memo(({ m, i: _i, onRegenerate, userAvatar, userName }) => {
   const isUser = m.role === 'user';
   const initials = toInitials(userName);
   return (
     <motion.div initial={false} animate={{ opacity: 1, y: 0 }} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div className={`max-w-3xl w-full flex ${isUser ? 'flex-row-reverse' : 'flex-row'} items-start gap-3`}>
+        <div className={`max-w-3xl w-full flex ${isUser ? 'flex-row-reverse' : 'flex-row'} items-start gap-3`}>
         <div
           className={`flex-shrink-0 w-8 h-8 rounded-full overflow-hidden ${isUser ? 'ml-1' : 'mr-1'}`}
           title={isUser ? 'You' : 'AI Tutor'}
@@ -1308,7 +1232,7 @@ const MessageBubble: React.FC<{
             </div>
           )}
         </div>
-        <div className={`${isUser ? 'bg-neutral-900 text-white' : 'bg-white text-neutral-900 border'} px-4 py-3 rounded-2xl shadow-sm`}>
+        <div className={`${isUser ? 'bg-white text-neutral-900 border' : 'bg-white text-neutral-900 border'} px-4 py-3 rounded-2xl shadow-sm`}>
           {isUser ? (
             <p className="whitespace-pre-wrap text-[0.95rem] leading-6">{m.content}</p>
           ) : (
@@ -1341,7 +1265,7 @@ const MessageBubble: React.FC<{
                         </SyntaxHighlighter>
                       </div>
                     ) : (
-                      <code className="px-1 py-0.5 rounded bg-neutral-100" {...props}>{children}</code>
+                      <code className="px-1 py-0.5 rounded bg-neutral-200" {...props}>{children}</code>
                     );
                   },
                   table: (p) => <div className="overflow-x-auto my-3"><table {...p} /></div>,

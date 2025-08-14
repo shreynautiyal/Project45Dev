@@ -5,7 +5,7 @@ import { useAuthStore } from '../../store/authStore';
 import { getXPProgress } from '../../lib/utils';
 import {
   Camera, Pencil, Loader2, Trophy, Flame, Zap, Check, X, Plus, Search,
-  MessageCircle, BellRing, Mail
+  MessageCircle, Mail
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
@@ -65,6 +65,7 @@ export default function ProfilePage() {
 
   const [friendRequestsIncoming, setFriendRequestsIncoming] = useState<FriendRequest[]>([]);
   const [friendRequestsOutgoing, setFriendRequestsOutgoing] = useState<FriendRequest[]>([]);
+  const [friends, setFriends] = useState<ProfileRow[]>([]);
   const [searchQ, setSearchQ] = useState('');
   const [searchResults, setSearchResults] = useState<ProfileRow[]>([]);
   const searchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -78,6 +79,7 @@ export default function ProfilePage() {
           fetchMe(),
           fetchMyPosts(),
           fetchFriendRequests(),
+          fetchFriends(),
         ]);
       } catch (e) {
         console.error(e);
@@ -118,23 +120,29 @@ export default function ProfilePage() {
 
   async function fetchFriendRequests() {
     if (!user) return;
+  
+    // only pending for the UI lists
     const { data: inc } = await supabase
       .from('social_friend_requests')
       .select('id, requester_id, addressee_id, status, created_at')
       .eq('addressee_id', user.id)
+      .eq('status', 'pending')                 // 👈 new
       .order('created_at', { ascending: false });
+  
     const { data: out } = await supabase
       .from('social_friend_requests')
       .select('id, requester_id, addressee_id, status, created_at')
       .eq('requester_id', user.id)
+      .eq('status', 'pending')                 // 👈 new
       .order('created_at', { ascending: false });
-
+  
     const ids = Array.from(
       new Set([
         ...(inc || []).map(r => r.requester_id),
         ...(out || []).map(r => r.addressee_id),
       ])
     );
+  
     let profiles: any[] = [];
     if (ids.length) {
       const { data: profs } = await supabase
@@ -151,6 +159,27 @@ export default function ProfilePage() {
       (out || []).map(r => ({ ...r, requester: pMap.get(r.requester_id), addressee: pMap.get(r.addressee_id) }))
     );
   }
+
+  async function fetchFriends() {
+    if (!user) return;
+    const { data, error } = await supabase
+      .from('social_friend_requests')
+      .select('requester_id, addressee_id, status')
+      .eq('status', 'accepted')
+      .or(`requester_id.eq.${user.id},addressee_id.eq.${user.id}`);
+    if (error) {
+      setFriends([]);
+      return;
+    }
+    const ids = Array.from(new Set((data || []).map(r => (r.requester_id === user.id ? r.addressee_id : r.requester_id))));
+    if (!ids.length) { setFriends([]); return; }
+    const { data: profs } = await supabase
+      .from('profiles')
+      .select('id, username, profile_picture, xp, streak, tier')
+      .in('id', ids);
+    setFriends((profs || []) as any);
+  }
+  
 
   function daysUntilNextUsernameChange(): number {
     if (!me?.username_changed_at) return 0;
@@ -233,23 +262,104 @@ export default function ProfilePage() {
     await fetchFriendRequests();
   }
 
-  async function acceptFriendRequest(reqId: string) {
+  // Attempt to notify another user (best-effort; table may vary). Silent on failure.
+  async function notifyUser(recipientId: string, type: string, content: string) {
+    if (!user) return;
     const { error } = await supabase
+      .from('social_notifications')
+      .insert({
+        user_id: recipientId,
+        type,
+        content,
+        created_by: user.id
+      });
+    if (error) {
+      // keep it quiet in prod; helpful when developing
+      console.warn('notifyUser skipped:', error.message);
+    }
+  }
+  
+  
+
+  // replace acceptFriendRequest with this
+async function acceptFriendRequest(reqId: string) {
+  if (!user) return;
+  const { error } = await supabase
+    .from('social_friend_requests')
+    .update({ status: 'accepted' })
+    .eq('id', reqId)
+    .eq('addressee_id', user.id); // safeguard: only the addressee can accept
+
+  if (error) {
+    console.warn('[acceptFriendRequest]', error);
+    return toast.error('Could not accept');
+  }
+
+  toast.success('Friend request accepted');
+  // optional: optimistic remove so UI updates instantly
+  setFriendRequestsIncoming(prev => prev.filter(r => r.id !== reqId));
+
+  // best-effort notify (no-op if you disabled it)
+  try {
+    const req = friendRequestsIncoming.find(r => r.id === reqId);
+    if (req?.requester_id) {
+      await notifyUser(req.requester_id, 'friend_request.accepted', `${me?.username || 'Someone'} accepted your friend request`);
+    }
+  } catch {}
+  
+  await fetchFriendRequests();
+}
+
+// replace declineFriendRequest with this
+async function declineFriendRequest(reqId: string) {
+  if (!user) return;
+  const { error } = await supabase
+    .from('social_friend_requests')
+    .update({ status: 'declined' })
+    .eq('id', reqId)
+    .eq('addressee_id', user.id);
+
+  if (error) {
+    console.warn('[declineFriendRequest]', error);
+    return toast.error('Could not decline');
+  }
+
+  toast.success('Declined');
+  setFriendRequestsIncoming(prev => prev.filter(r => r.id !== reqId));
+  await fetchFriendRequests();
+}
+
+
+  // Bulk actions
+  async function acceptAllFriendRequests() {
+    if (!user) return;
+    const { data, error } = await supabase
       .from('social_friend_requests')
       .update({ status: 'accepted' })
-      .eq('id', reqId);
-    if (error) return toast.error('Could not accept');
-    toast.success('Friend request accepted');
+      .eq('addressee_id', user.id)
+      .eq('status', 'pending')
+      .select('requester_id');
+    if (error) return toast.error('Could not accept all');
+    toast.success('Accepted all pending');
+    if (Array.isArray(data)) {
+      for (const r of data) await notifyUser(r.requester_id, 'friend_request.accepted', `${me?.username || 'Someone'} accepted your friend request`);
+    }
     await fetchFriendRequests();
   }
 
-  async function declineFriendRequest(reqId: string) {
-    const { error } = await supabase
+  async function declineAllFriendRequests() {
+    if (!user) return;
+    const { data, error } = await supabase
       .from('social_friend_requests')
       .update({ status: 'declined' })
-      .eq('id', reqId);
-    if (error) return toast.error('Could not decline');
-    toast.success('Declined');
+      .eq('addressee_id', user.id)
+      .eq('status', 'pending')
+      .select('requester_id');
+    if (error) return toast.error('Could not decline all');
+    toast.success('Declined all pending');
+    if (Array.isArray(data)) {
+      for (const r of data) await notifyUser(r.requester_id, 'friend_request.declined', `${me?.username || 'Someone'} declined your friend request`);
+    }
     await fetchFriendRequests();
   }
 
@@ -387,9 +497,34 @@ export default function ProfilePage() {
 
         {/* Right */}
         <aside className="lg:col-span-4 space-y-6">
+          {/* Friends */}
+          <div className="bg-white rounded-2xl border border-neutral-200 p-6">
+            <h3 className="font-bold text-gray-900 mb-3">Friends ({friends.length})</h3>
+            {friends.length === 0 ? (
+              <div className="text-sm text-gray-500">No friends yet</div>
+            ) : (
+              <div className="space-y-2 max-h-72 overflow-y-auto">
+                {friends.map((f) => (
+                  <div key={f.id} className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50">
+                    <AvatarPlain url={f.profile_picture} />
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium text-gray-900 truncate">@{f.username}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           {/* Friend Requests */}
           <div className="bg-white rounded-2xl border border-neutral-200 p-6">
-            <h3 className="font-bold text-gray-900 mb-3">Friend Requests</h3>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-bold text-gray-900">Friend Requests</h3>
+              <div className="flex gap-2">
+                <button onClick={acceptAllFriendRequests} className="px-3 py-1.5 rounded-lg text-xs bg-gray-800 text-white hover:bg-gray-700">Accept all</button>
+                <button onClick={declineAllFriendRequests} className="px-3 py-1.5 rounded-lg text-xs bg-gray-100 text-gray-800 hover:bg-gray-200">Decline all</button>
+              </div>
+            </div>
             <RequestSection
               incoming={friendRequestsIncoming}
               outgoing={friendRequestsOutgoing}
@@ -414,7 +549,6 @@ export default function ProfilePage() {
               {searchResults.length === 0 ? (
                 <div className="text-sm text-gray-500 text-center py-6">No results</div>
               ) : (
-                searchResults.map(p =>
                 searchResults.map(p => (
                   <div key={p.id} className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50">
                     <AvatarPlain url={p.profile_picture} />
@@ -433,7 +567,7 @@ export default function ProfilePage() {
                     </div>
                   </div>
                 ))
-              ))}
+              )}
             </div>
           </div>
 
